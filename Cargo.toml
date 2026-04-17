@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "sdui-core",
+    "sdui-wire",
+    "sdui-cel",
+    "sdui-runtime-wgpu",
+    "sdui-presets",
+    "app-native",
+    "app-web",
+    "examples/mock-server",
+    "xtask",
+]
+
+# `examples/smoke` is an example-name placeholder directory, not a crate.
+# `app-native` / `app-web` receive `--example smoke` as a runtime argument.
+exclude = ["examples/smoke"]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.0"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# Pin major.minor from crates.io probes on 2026-04-17; see each crate's Cargo.toml
+# for inline citations.
+accesskit = "0.24"
+accesskit_macos = "0.26"
+accesskit_winit = "0.32"
+winit = "0.30"
+wgpu = "29"
+glyphon = "0.11"
+cel-interpreter = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+axum = "0.8"
+wasm-bindgen = "0.2"
+web-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+[profile.dev]
+# Keep defaults; Iteration 0 does not tune build times.

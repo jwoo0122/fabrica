@@ -1,0 +1,12 @@
+[package]
+name = "sdui-cel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Dependency pulled in so the crate resolves against CEL; actual evaluation is
+# a later iteration (see CLAUDE.md §"Architecture summary" / CEL section).
+# crates.io: https://crates.io/crates/cel-interpreter (0.10.0 on 2025-07-23)
+cel-interpreter = { workspace = true }

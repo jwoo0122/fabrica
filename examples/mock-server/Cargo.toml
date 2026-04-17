@@ -1,0 +1,17 @@
+[package]
+name = "mock-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mock-server"
+path = "src/main.rs"
+
+[dependencies]
+# axum 0.8 on tokio — confirmed latest stable 2026-04-17 on crates.io.
+# docs.rs: https://docs.rs/axum/0.8/axum/
+axum = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }

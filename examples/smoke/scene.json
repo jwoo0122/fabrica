@@ -1,0 +1,31 @@
+{
+  "type": "Frame",
+  "label": "smoke-frame",
+  "background_color": [0.2, 0.6, 1.0, 1.0],
+  "x": 100.0,
+  "y": 80.0,
+  "width": 300.0,
+  "height": 200.0,
+  "children": [
+    {
+      "type": "Frame",
+      "label": "inner-frame",
+      "background_color": [1.0, 0.4, 0.1, 1.0],
+      "x": 20.0,
+      "y": 20.0,
+      "width": 120.0,
+      "height": 80.0
+    },
+    {
+      "type": "Text",
+      "label": "greeting-text",
+      "content": "Hello, SDUI!",
+      "font_size": 24.0,
+      "color": [1.0, 1.0, 1.0, 1.0],
+      "x": 20.0,
+      "y": 120.0,
+      "width": 260.0,
+      "height": 40.0
+    }
+  ]
+}

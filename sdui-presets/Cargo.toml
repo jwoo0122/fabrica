@@ -1,0 +1,9 @@
+[package]
+name = "sdui-presets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sdui-core = { path = "../sdui-core" }

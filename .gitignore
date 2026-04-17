@@ -1,0 +1,27 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.direnv/
+.envrc
+
+# Claude Code local-only settings and work artifacts
+.claude/settings.local.json
+.iteration-*-criteria.md
+
+# Verification harness output (runtime-generated)
+target/verify-out/
+ax-dump-*.json
+
+# Misc temp
+*.pid
+*.log

@@ -1,0 +1,29 @@
+[package]
+name = "app-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Criterion #4 in .iteration-0-criteria.md requires `process "app-native"` to be
+# addressable by AppleScript, which keys off the executable filename.
+[[bin]]
+name = "app-native"
+path = "src/main.rs"
+
+[dependencies]
+sdui-core = { path = "../sdui-core" }
+sdui-runtime-wgpu = { path = "../sdui-runtime-wgpu" }
+accesskit = { workspace = true }
+accesskit_winit = { workspace = true }
+winit = { workspace = true }
+wgpu = { workspace = true }
+serde_json = { workspace = true }
+pollster = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Explicit dep so that .iteration-0-criteria.md §6 check
+# `grep -E '^accesskit_macos\s*=' app-native/Cargo.toml` succeeds.
+# accesskit_winit already links the same crate transitively on macOS; pinning
+# the same version here avoids split-version resolution.
+accesskit_macos = { workspace = true }

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>sdui smoke</title>
+  </head>
+  <body>
+    <!--
+      Served by `cargo xtask run-web`. The referenced .wasm module is placed
+      next to this file by xtask's wasm-bindgen invocation; see
+      xtask/src/main.rs `build_web_dist`.
+    -->
+    <script type="module">
+      import init from "./app_web.js";
+      init("./app_web_bg.wasm").catch((e) => {
+        console.error("sdui boot failure", e);
+      });
+    </script>
+  </body>
+</html>
