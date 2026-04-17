@@ -15,3 +15,6 @@ path = "src/main.rs"
 axum = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
+# tower-http's ServeDir mounts the /assets static tree (Iteration 4).
+# docs.rs: https://docs.rs/tower-http/0.6/tower_http/services/struct.ServeDir.html
+tower-http = { workspace = true }

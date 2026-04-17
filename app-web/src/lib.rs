@@ -1,19 +1,41 @@
-//! Iteration 2 `app-web`: renders a scene tree of nested Frames from
-//! `scene.json` via wgpu into an HTML canvas, and publishes a hierarchical
-//! AccessKit-mirror DOM tree.
+//! Iteration 4 `app-web`: renders a scene tree of nested Frames + Text +
+//! Image nodes from `scene.json` via wgpu into an HTML canvas, and publishes
+//! a hierarchical AccessKit-mirror DOM tree.
 //!
-//! wgpu wasm surface creation uses `SurfaceTarget::Canvas(HtmlCanvasElement)`.
-//! Reference: <https://docs.rs/wgpu/latest/wasm32-unknown-unknown/wgpu/enum.SurfaceTarget.html>
+//! Image loading is asynchronous — `spawn_local` fetches each URL, retries
+//! every second until success, then calls `register_image` and requests one
+//! new frame via `requestAnimationFrame`. No per-frame render loop.
+//!
+//! References checked 2026-04-17:
+//!   - wgpu canvas target: <https://docs.rs/wgpu/latest/wasm32-unknown-unknown/wgpu/enum.SurfaceTarget.html>
+//!   - web-sys fetch pattern: <https://rustwasm.github.io/docs/wasm-bindgen/examples/fetch.html>
+//!   - gloo-timers TimeoutFuture: <https://docs.rs/gloo-timers/0.3/gloo_timers/future/struct.TimeoutFuture.html>
 
 // Host builds (cargo check --workspace on aarch64-apple-darwin) only need the
 // crate to compile; the entry point and wasm-specific code is gated.
 #[cfg(target_arch = "wasm32")]
 mod wasm_entry {
-    use sdui_core::SceneNode;
+    use gloo_timers::future::TimeoutFuture;
+    use js_sys::{ArrayBuffer, Uint8Array};
+    use sdui_core::{ImageSource, SceneNode};
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Request, RequestInit, RequestMode, Response};
 
     /// scene.json is embedded at build time so no async fetch is needed.
     const SCENE_JSON: &str = include_str!("../../examples/smoke/scene.json");
+
+    /// Shared render state — owned by the start function, borrowed by the
+    /// render loop closures and by each spawned image loader.
+    struct RenderState {
+        renderer: sdui_runtime_wgpu::Renderer,
+        surface: wgpu::Surface<'static>,
+        config: wgpu::SurfaceConfiguration,
+        scene: SceneNode,
+    }
 
     #[wasm_bindgen(start)]
     pub fn start() -> Result<(), JsValue> {
@@ -79,8 +101,43 @@ mod wasm_entry {
                 el.set_attribute("aria-label", &t.content)?;
                 parent.append_child(&el)?;
             }
+            SceneNode::Image(i) => {
+                let alt = i.alt.as_deref().unwrap_or(&i.label);
+                match &i.source {
+                    ImageSource::Url { url } => {
+                        let el = document.create_element("img")?;
+                        el.set_attribute("src", url)?;
+                        el.set_attribute("alt", alt)?;
+                        el.set_attribute("aria-label", alt)?;
+                        el.set_attribute("width", &format!("{}", i.width as i32))?;
+                        el.set_attribute("height", &format!("{}", i.height as i32))?;
+                        parent.append_child(&el)?;
+                    }
+                    ImageSource::Path { .. } => {
+                        // Browser cannot read filesystem paths — fall back to
+                        // a role=img placeholder with aria-label only.
+                        let el = document.create_element("div")?;
+                        el.set_attribute("role", "img")?;
+                        el.set_attribute("aria-label", alt)?;
+                        parent.append_child(&el)?;
+                    }
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Recursively collect every `ImageSource` referenced by a subtree.
+    fn collect_image_sources(node: &SceneNode, out: &mut Vec<ImageSource>) {
+        match node {
+            SceneNode::Frame(f) => {
+                for child in &f.children {
+                    collect_image_sources(child, out);
+                }
+            }
+            SceneNode::Text(_) => {}
+            SceneNode::Image(i) => out.push(i.source.clone()),
+        }
     }
 
     async fn run() {
@@ -148,18 +205,116 @@ mod wasm_entry {
         };
         surface.configure(&device, &config);
 
-        let mut renderer = sdui_runtime_wgpu::Renderer::new(device, queue, format);
+        let renderer = sdui_runtime_wgpu::Renderer::new(device, queue, format);
 
-        render_frame(&mut renderer, &surface, &config, &scene);
+        let state = Rc::new(RefCell::new(RenderState {
+            renderer,
+            surface,
+            config,
+            scene,
+        }));
+
+        // Initial frame — Images show placeholders until fetches land.
+        render_once(&state);
+
+        // Spawn an async loader per Image. Each loop retries every second on
+        // failure; on success, it calls register_image and re-renders once.
+        let mut sources = Vec::new();
+        collect_image_sources(&state.borrow().scene, &mut sources);
+        for source in sources {
+            let state = state.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                load_image_with_retry(state, source).await;
+            });
+        }
     }
 
-    fn render_frame(
-        renderer: &mut sdui_runtime_wgpu::Renderer,
-        surface: &wgpu::Surface<'_>,
-        config: &wgpu::SurfaceConfiguration,
-        scene: &SceneNode,
-    ) {
+    /// Fetch-and-register one image source, retrying every 1 s on error. On
+    /// success, decode on the wgpu side and schedule one animation frame.
+    async fn load_image_with_retry(state: Rc<RefCell<RenderState>>, source: ImageSource) {
+        let url = match &source {
+            ImageSource::Url { url } => url.clone(),
+            ImageSource::Path { path } => {
+                // Browsers can't fetch(path); mirror DOM already falls back,
+                // and the renderer keeps the placeholder.
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "[app-web] Path source '{path}' not loadable in browser; leaving placeholder"
+                )));
+                return;
+            }
+        };
+
+        loop {
+            match fetch_bytes(&url).await {
+                Ok(bytes) => {
+                    state.borrow_mut().renderer.register_image(&source, &bytes);
+                    request_one_redraw(state.clone());
+                    break;
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "[app-web] image fetch {url} failed ({e:?}); retrying in 1s"
+                    )));
+                    TimeoutFuture::new(1000).await;
+                }
+            }
+        }
+    }
+
+    /// `fetch(url)` → `Response.arrayBuffer()` → `Vec<u8>`.
+    async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
+        let opts = RequestInit::new();
+        opts.set_method("GET");
+        opts.set_mode(RequestMode::Cors);
+
+        let request = Request::new_with_str_and_init(url, &opts)?;
+        let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+        let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
+        let resp: Response = resp_value.dyn_into()?;
+        if !resp.ok() {
+            return Err(JsValue::from_str(&format!(
+                "HTTP {} for {url}",
+                resp.status()
+            )));
+        }
+        let ab = JsFuture::from(resp.array_buffer()?).await?;
+        let ab: ArrayBuffer = ab.dyn_into()?;
+        let u8s = Uint8Array::new(&ab);
+        let mut buf = vec![0u8; u8s.length() as usize];
+        u8s.copy_to(&mut buf);
+        Ok(buf)
+    }
+
+    /// Schedule exactly one `requestAnimationFrame` that re-renders from
+    /// `state`. No persistent frame loop — calls are event-driven.
+    fn request_one_redraw(state: Rc<RefCell<RenderState>>) {
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        let closure = Closure::once_into_js(move || {
+            render_once(&state);
+        });
+        if let Err(e) =
+            window.request_animation_frame(closure.as_ref().unchecked_ref::<js_sys::Function>())
+        {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "[app-web] requestAnimationFrame failed: {e:?}"
+            )));
+        }
+    }
+
+    /// Render the scene once using the current state.
+    fn render_once(state: &Rc<RefCell<RenderState>>) {
         use wgpu::CurrentSurfaceTexture;
+
+        let mut s = state.borrow_mut();
+        let RenderState {
+            renderer,
+            surface,
+            config,
+            scene,
+        } = &mut *s;
 
         let output = match surface.get_current_texture() {
             CurrentSurfaceTexture::Success(tex) | CurrentSurfaceTexture::Suboptimal(tex) => tex,

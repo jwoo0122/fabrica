@@ -20,6 +20,9 @@ winit = { workspace = true }
 wgpu = { workspace = true }
 serde_json = { workspace = true }
 pollster = "0.4"
+# Native synchronous HTTP for Image::Url warm-up at scene load.
+# docs.rs: https://docs.rs/ureq/3/ureq/
+ureq = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Explicit dep so that .iteration-0-criteria.md §6 check

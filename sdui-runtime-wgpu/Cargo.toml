@@ -10,3 +10,6 @@ sdui-core = { path = "../sdui-core" }
 wgpu = { workspace = true }
 glyphon = { workspace = true }
 bytemuck = { version = "1", features = ["derive"] }
+# PNG-only image decoder. WASM bundle stays tight; no JPEG/WebP/rayon pull-in.
+# docs.rs: https://docs.rs/image/0.25/image/
+image = { version = "0.25", default-features = false, features = ["png"] }

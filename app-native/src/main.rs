@@ -12,9 +12,10 @@
 
 use accesskit::{Node, Role, Tree, TreeId, TreeUpdate};
 use accesskit_winit::{Adapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent};
-use sdui_core::{flatten_scene, SceneNode, ROOT_NODE_ID};
+use sdui_core::{flatten_scene, ImageSource, SceneNode, ROOT_NODE_ID};
 use sdui_runtime_wgpu::Renderer;
 use std::error::Error;
+use std::io::Read;
 use std::path::PathBuf;
 use wgpu::CurrentSurfaceTexture;
 use winit::{
@@ -119,6 +120,21 @@ fn dump_ax_tree(scene: &SceneNode) {
                     },
                 })
             }
+            SceneNode::Image(i) => {
+                let abs_x = parent_x + i.x;
+                let abs_y = parent_y + i.y;
+
+                serde_json::json!({
+                    "role": "image",
+                    "label": i.alt.as_deref().unwrap_or(&i.label),
+                    "bounds": {
+                        "x0": abs_x,
+                        "y0": abs_y,
+                        "x1": abs_x + i.width,
+                        "y1": abs_y + i.height,
+                    },
+                })
+            }
         }
     }
 
@@ -133,6 +149,53 @@ fn dump_ax_tree(scene: &SceneNode) {
     });
     if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()) {
         eprintln!("warning: failed to write ax-dump: {e}");
+    }
+}
+
+/// Recursively collect every `ImageSource` referenced by this subtree.
+fn collect_image_sources(node: &SceneNode, out: &mut Vec<ImageSource>) {
+    match node {
+        SceneNode::Frame(f) => {
+            for child in &f.children {
+                collect_image_sources(child, out);
+            }
+        }
+        SceneNode::Text(_) => {}
+        SceneNode::Image(i) => out.push(i.source.clone()),
+    }
+}
+
+/// Fetch the bytes for an `ImageSource` (blocking). `Url` uses `ureq`, `Path`
+/// reads the filesystem. Errors are propagated so the caller can warn and skip.
+fn load_image_bytes(source: &ImageSource) -> Result<Vec<u8>, Box<dyn Error>> {
+    match source {
+        ImageSource::Url { url } => {
+            let resp = ureq::get(url).call()?;
+            let mut reader = resp.into_body().into_reader();
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf)?;
+            Ok(buf)
+        }
+        ImageSource::Path { path } => {
+            let buf = std::fs::read(path)?;
+            Ok(buf)
+        }
+    }
+}
+
+/// Warm up `renderer`'s image cache for every `Image` node in `scene`.
+///
+/// Failures (network/FS/decode) log to stderr and skip — the placeholder
+/// keeps rendering.
+fn warm_image_cache(scene: &SceneNode, renderer: &mut Renderer) {
+    let mut sources = Vec::new();
+    collect_image_sources(scene, &mut sources);
+
+    for source in sources {
+        match load_image_bytes(&source) {
+            Ok(bytes) => renderer.register_image(&source, &bytes),
+            Err(e) => eprintln!("image load failed for {source:?}: {e}"),
+        }
     }
 }
 
@@ -209,7 +272,11 @@ impl App {
         };
         surface.configure(&device, &config);
 
-        let renderer = Renderer::new(device, queue, format);
+        let mut renderer = Renderer::new(device, queue, format);
+
+        // Synchronously load every Image referenced by the scene so the first
+        // frame doesn't flash a placeholder. Failures keep the placeholder.
+        warm_image_cache(&self.scene, &mut renderer);
 
         let ws = self.window.as_mut().unwrap();
         ws.gpu = Some(GpuState {
@@ -237,7 +304,6 @@ impl ApplicationHandler<AccessKitEvent> for App {
             }
         };
         let adapter = Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
-        window.set_visible(true);
         self.window = Some(WindowState {
             window,
             adapter,
@@ -246,6 +312,14 @@ impl ApplicationHandler<AccessKitEvent> for App {
 
         self.init_gpu();
         dump_ax_tree(&self.scene);
+
+        // Make the window visible only AFTER the surface is configured and the
+        // image cache is warmed — otherwise macOS may commit it while wgpu is
+        // still initializing, the first frames land in the Occluded state, and
+        // nothing subsequently kicks a redraw.
+        let ws = self.window.as_ref().expect("window must exist");
+        ws.window.set_visible(true);
+        ws.window.request_redraw();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
@@ -266,6 +340,9 @@ impl ApplicationHandler<AccessKitEvent> for App {
                     state.window.request_redraw();
                 }
             }
+            WindowEvent::Occluded(false) => {
+                state.window.request_redraw();
+            }
             WindowEvent::RedrawRequested => {
                 if let Some(gpu) = state.gpu.as_mut() {
                     let output = match gpu.surface.get_current_texture() {
@@ -273,10 +350,12 @@ impl ApplicationHandler<AccessKitEvent> for App {
                         | CurrentSurfaceTexture::Suboptimal(tex) => tex,
                         CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
                             gpu.surface.configure(gpu.renderer.device(), &gpu.config);
+                            state.window.request_redraw();
                             return;
                         }
                         other => {
                             eprintln!("surface texture error: {other:?}");
+                            state.window.request_redraw();
                             return;
                         }
                     };

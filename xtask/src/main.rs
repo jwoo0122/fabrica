@@ -14,7 +14,7 @@
 use clap::{Parser, Subcommand};
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
 };
 
 #[derive(Parser)]
@@ -117,6 +117,52 @@ fn ensure_wasm_bindgen_cli() -> std::io::Result<()> {
     )
 }
 
+/// Fixed port for the bundled mock-server. Example scene.json files reference
+/// `http://127.0.0.1:8138/assets/...` directly.
+const MOCK_SERVER_PORT: u16 = 8138;
+
+/// Build mock-server, spawn it as a child on `MOCK_SERVER_PORT`, print its PID,
+/// and return the child handle. Callers are expected to kill it when the main
+/// app exits.
+fn spawn_mock_server(root: &Path) -> std::io::Result<Child> {
+    // Build up front so the child's stdout isn't polluted with compile logs.
+    run(
+        {
+            let mut c = cargo();
+            c.current_dir(root).args(["build", "-p", "mock-server"]);
+            c
+        },
+        "cargo build -p mock-server",
+    )?;
+
+    let bin = root.join("target").join("debug").join("mock-server");
+    if !bin.exists() {
+        return Err(std::io::Error::other(format!(
+            "mock-server binary missing: {}",
+            bin.display()
+        )));
+    }
+
+    let child = Command::new(&bin)
+        .arg(MOCK_SERVER_PORT.to_string())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    eprintln!(
+        "[xtask] mock-server pid={} on http://127.0.0.1:{MOCK_SERVER_PORT}",
+        child.id()
+    );
+    Ok(child)
+}
+
+/// Best-effort `kill` for a background child. Errors are logged, never propagated.
+fn stop_mock_server(child: &mut Child) {
+    if let Err(e) = child.kill() {
+        eprintln!("[xtask] warning: failed to kill mock-server: {e}");
+    }
+    let _ = child.wait();
+}
+
 fn cmd_build_all() -> std::io::Result<()> {
     let root = workspace_root();
     ensure_wasm_target()?;
@@ -164,6 +210,9 @@ fn cmd_run_native(example: &str, background: bool, pidfile: Option<&Path>) -> st
         )));
     }
 
+    // Co-boot mock-server so the scene can fetch its bundled assets on first paint.
+    let mut mock_child = spawn_mock_server(&root)?;
+
     let mut cmd = Command::new(&bin);
     cmd.arg("--example").arg(example);
 
@@ -172,10 +221,23 @@ fn cmd_run_native(example: &str, background: bool, pidfile: Option<&Path>) -> st
         if let Some(p) = pidfile {
             std::fs::write(p, child.id().to_string())?;
         }
-        // Don't wait; detach by dropping child (child remains alive on Unix).
+        // Detach the main app; mock-server stays a zombie-free background
+        // process whose lifetime is independent. /verify-* scripts are
+        // expected to clean it up via the printed PID.
+        eprintln!(
+            "[xtask] background mode: app-native pid written to pidfile; \
+             mock-server pid={} must be stopped separately",
+            mock_child.id()
+        );
+        // Forget the Child so its destructor doesn't try to kill on drop.
+        std::mem::forget(mock_child);
         return Ok(());
     }
-    let status = cmd.status()?;
+
+    // Foreground: block on app; tear down mock-server when it exits.
+    let status_result = cmd.status();
+    stop_mock_server(&mut mock_child);
+    let status = status_result?;
     if !status.success() {
         return Err(std::io::Error::other(format!("app-native exit {status}")));
     }
@@ -249,6 +311,9 @@ fn cmd_run_web(
     let root = workspace_root();
     let dist = build_web_dist(&root)?;
 
+    // Co-boot mock-server so fetches from the wasm app succeed first-try.
+    let mut mock_child = spawn_mock_server(&root)?;
+
     if background {
         // Re-exec ourselves with a hidden subcommand so the child actually
         // supervises the tokio runtime; the parent writes the pidfile + exits.
@@ -265,10 +330,18 @@ fn cmd_run_web(
         if let Some(p) = pidfile {
             std::fs::write(p, child.id().to_string())?;
         }
+        eprintln!(
+            "[xtask] background mode: app-web pid written to pidfile; \
+             mock-server pid={} must be stopped separately",
+            mock_child.id()
+        );
+        std::mem::forget(mock_child);
         return Ok(());
     }
 
-    serve_web_blocking(&dist, port, example)
+    let result = serve_web_blocking(&dist, port, example);
+    stop_mock_server(&mut mock_child);
+    result
 }
 
 fn serve_web_blocking(dist: &Path, port: u16, _example: &str) -> std::io::Result<()> {

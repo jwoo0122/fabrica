@@ -5,7 +5,7 @@
   "x": 100.0,
   "y": 80.0,
   "width": 300.0,
-  "height": 200.0,
+  "height": 320.0,
   "children": [
     {
       "type": "Frame",
@@ -26,6 +26,19 @@
       "y": 120.0,
       "width": 260.0,
       "height": 40.0
+    },
+    {
+      "type": "Image",
+      "label": "smoke-image",
+      "alt": "Checker pattern test image",
+      "source": {
+        "kind": "url",
+        "url": "http://localhost:8138/assets/smoke.png"
+      },
+      "x": 20.0,
+      "y": 180.0,
+      "width": 120.0,
+      "height": 120.0
     }
   ]
 }
