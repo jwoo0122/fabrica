@@ -17,7 +17,8 @@
 mod wasm_entry {
     use gloo_timers::future::TimeoutFuture;
     use js_sys::{ArrayBuffer, Uint8Array};
-    use sdui_core::{ImageSource, SceneNode};
+    use sdui_cel::CelEngine;
+    use sdui_core::{resolve_scene, ImageSource, SceneNode};
     use std::cell::RefCell;
     use std::rc::Rc;
     use wasm_bindgen::prelude::*;
@@ -35,6 +36,17 @@ mod wasm_entry {
         surface: wgpu::Surface<'static>,
         config: wgpu::SurfaceConfiguration,
         scene: SceneNode,
+    }
+
+    /// Parse the embedded `scene.json`, resolve every `Condition` against a
+    /// fresh `CelEngine`, and return the condition-free tree. Any failure is
+    /// surfaced as `JsValue` so `start()` can reject cleanly.
+    fn load_resolved_scene() -> Result<SceneNode, JsValue> {
+        let raw: SceneNode = serde_json::from_str(SCENE_JSON)
+            .map_err(|e| JsValue::from_str(&format!("scene.json parse error: {e}")))?;
+        let engine = CelEngine::new();
+        resolve_scene(&raw, &engine)
+            .ok_or_else(|| JsValue::from_str("root scene resolved to nothing"))
     }
 
     #[wasm_bindgen(start)]
@@ -69,16 +81,14 @@ mod wasm_entry {
         root.set_id("sdui-root");
         body.append_child(&root)?;
 
-        let scene: SceneNode = serde_json::from_str(SCENE_JSON)
-            .map_err(|e| JsValue::from_str(&format!("scene.json parse error: {e}")))?;
-
-        // Recursively build mirror DOM from scene tree.
+        let scene = load_resolved_scene()?;
         mount_mirror_node(&document, &root, &scene)?;
 
         Ok(())
     }
 
     /// Recursively create mirror DOM elements for a scene node and its children.
+    /// The scene is expected to be condition-free (see `resolve_scene`).
     fn mount_mirror_node(
         document: &web_sys::Document,
         parent: &web_sys::Element,
@@ -123,11 +133,15 @@ mod wasm_entry {
                     }
                 }
             }
+            SceneNode::Condition(_) => {
+                unreachable!("Condition must be resolved via resolve_scene before DOM mount")
+            }
         }
         Ok(())
     }
 
     /// Recursively collect every `ImageSource` referenced by a subtree.
+    /// The scene is expected to be condition-free (see `resolve_scene`).
     fn collect_image_sources(node: &SceneNode, out: &mut Vec<ImageSource>) {
         match node {
             SceneNode::Frame(f) => {
@@ -137,11 +151,14 @@ mod wasm_entry {
             }
             SceneNode::Text(_) => {}
             SceneNode::Image(i) => out.push(i.source.clone()),
+            SceneNode::Condition(_) => {
+                unreachable!("Condition must be resolved via resolve_scene before image collection")
+            }
         }
     }
 
     async fn run() {
-        let scene: SceneNode = serde_json::from_str(SCENE_JSON).expect("scene.json parse");
+        let scene = load_resolved_scene().expect("scene.json load/resolve");
 
         let window = web_sys::window().expect("no window");
         let document = window.document().expect("no document");
@@ -220,7 +237,10 @@ mod wasm_entry {
         // Spawn an async loader per Image. Each loop retries every second on
         // failure; on success, it calls register_image and re-renders once.
         let mut sources = Vec::new();
-        collect_image_sources(&state.borrow().scene, &mut sources);
+        {
+            let s = state.borrow();
+            collect_image_sources(&s.scene, &mut sources);
+        }
         for source in sources {
             let state = state.clone();
             wasm_bindgen_futures::spawn_local(async move {

@@ -15,6 +15,6 @@ cargo xtask run-web    --example smoke --port 8137
 
 - Nested `Frame` with relative positioning (blue parent → orange child)
 - `Text` leaf rendered via glyphon on a solid background
-- `Image` leaf rendered as a textured wgpu quad; PNG fetched from `http://127.0.0.1:8138/assets/smoke.png`
+- `Image` leaf rendered as a textured wgpu quad; PNG fetched from `http://localhost:8138/assets/smoke.png`
 
 `scene.json` is the SSOT; the same JSON drives both platforms.

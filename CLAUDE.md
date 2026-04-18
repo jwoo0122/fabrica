@@ -6,7 +6,7 @@ See [`README.md`](./README.md) for the public project overview, quick start, and
 
 ## Repository status
 
-Through **Iteration 3**: `Frame` (nested, relative positioning) + `Text` (glyphon-rendered) render end-to-end on macOS native and WASM/WebGPU. AccessKit tree on native, ARIA mirror DOM on web. See [`README.md`](./README.md) for the iteration log.
+Through **Iteration 5**: primitives `{Frame, Text, Image}` plus the first operator `Condition` (CEL-driven branch selection, literal-only evaluation environment). `sdui-cel` is realized as an `ExpressionEngine` trait backed by `cel-interpreter`. A `resolve_scene` pre-pass substitutes `Condition` nodes at scene-load time, keeping `sdui-runtime-wgpu` byte-identical to its pre-Iteration-5 form. AccessKit tree on native, ARIA mirror DOM on web. See [`README.md`](./README.md) and [`SPRINTS.md`](./SPRINTS.md) for the completed iteration log.
 
 ## Non-negotiable principles
 
@@ -88,6 +88,31 @@ All orchestration goes through `cargo xtask`. Direct cargo commands work but ski
 ## Verification harness
 
 Two bundled project skills close the feedback loop. Invoke via `/verify-native` and `/verify-web`. Artifacts land in `target/verify-out/`.
+
+### Preflight — mock-server health (MANDATORY before every verification run)
+
+`examples/mock-server` serves bundled assets (e.g., `/assets/smoke.png`) that the example scenes fetch. A silent 404 from this server has masked real failures in the past (a stale binary compiled against a renamed workspace path continued to "succeed" at boot but served 404s). The verifier must confirm the server is up **and serving the expected asset** before trusting any downstream visual or AX assertion.
+
+Required preflight at the start of **every** `/verify-native` or `/verify-web` run, before the app is launched:
+
+1. Rebuild from source (cheap when up-to-date, guards against stale-binary bugs):
+   ```
+   cargo build -p mock-server
+   ```
+2. Launch mock-server (xtask does this automatically for `run-native`/`run-web`).
+3. Probe health **and** the asset route:
+   ```
+   curl -sf http://localhost:8138/health
+   curl -sfo /dev/null -w '%{http_code} %{content_type}\n' http://localhost:8138/assets/smoke.png
+   ```
+   Expect `ok` and `200 image/png`. If the PNG probe returns anything else, **stop** — do not run the rest of the verification. Resolve by:
+   ```
+   cargo clean -p mock-server && cargo build -p mock-server
+   ```
+   then retry. (mock-server now exits loudly on startup if its asset directory is missing — see `examples/mock-server/src/main.rs::assets_dir`.)
+4. Record both probe outputs in the verification report.
+
+Rule: a verification run that did not complete the asset probe above is **not** a verification run. Re-do it.
 
 ### Native (macOS) — `/verify-native`
 

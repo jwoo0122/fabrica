@@ -12,7 +12,8 @@
 
 use accesskit::{Node, Role, Tree, TreeId, TreeUpdate};
 use accesskit_winit::{Adapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent};
-use sdui_core::{flatten_scene, ImageSource, SceneNode, ROOT_NODE_ID};
+use sdui_cel::CelEngine;
+use sdui_core::{flatten_scene, resolve_scene, ImageSource, SceneNode, ROOT_NODE_ID};
 use sdui_runtime_wgpu::Renderer;
 use std::error::Error;
 use std::io::Read;
@@ -57,7 +58,8 @@ fn build_tree_update(scene: &SceneNode) -> TreeUpdate {
     let mut root = Node::new(Role::Window);
     root.set_label(WINDOW_TITLE);
     // Root's children are the top-level scene nodes (just the first one).
-    root.set_children(vec![flat[0].id]);
+    let top_children: Vec<_> = flat.first().map(|n| vec![n.id]).unwrap_or_default();
+    root.set_children(top_children);
 
     let mut nodes: Vec<(accesskit::NodeId, Node)> = vec![(ROOT_NODE_ID, root)];
     for flat_node in &flat {
@@ -135,6 +137,9 @@ fn dump_ax_tree(scene: &SceneNode) {
                     },
                 })
             }
+            SceneNode::Condition(_) => {
+                unreachable!("Condition must be resolved via resolve_scene before ax dump")
+            }
         }
     }
 
@@ -144,7 +149,7 @@ fn dump_ax_tree(scene: &SceneNode) {
         "root": {
             "role": "window",
             "label": WINDOW_TITLE,
-            "children": [scene_to_json(scene, 0.0, 0.0)]
+            "children": [scene_to_json(scene, 0.0, 0.0)],
         }
     });
     if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()) {
@@ -153,6 +158,7 @@ fn dump_ax_tree(scene: &SceneNode) {
 }
 
 /// Recursively collect every `ImageSource` referenced by this subtree.
+/// The scene is expected to be condition-free (see `resolve_scene`).
 fn collect_image_sources(node: &SceneNode, out: &mut Vec<ImageSource>) {
     match node {
         SceneNode::Frame(f) => {
@@ -162,6 +168,9 @@ fn collect_image_sources(node: &SceneNode, out: &mut Vec<ImageSource>) {
         }
         SceneNode::Text(_) => {}
         SceneNode::Image(i) => out.push(i.source.clone()),
+        SceneNode::Condition(_) => {
+            unreachable!("Condition must be resolved via resolve_scene before image collection")
+        }
     }
 }
 
@@ -402,6 +411,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let _ = std::env::args().collect::<Vec<_>>();
 
     let scene = load_scene();
+    let engine = CelEngine::new();
+    let scene = resolve_scene(&scene, &engine).expect("root scene must not resolve to nothing");
 
     let event_loop = EventLoop::<AccessKitEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();

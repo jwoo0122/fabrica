@@ -8,6 +8,7 @@
 
 pub use accesskit::NodeId;
 use accesskit::{Node, Rect, Role};
+use sdui_cel::ExpressionEngine;
 use serde::{Deserialize, Serialize};
 
 // ── Node types ───────────────────────────────────────────────────────────
@@ -25,6 +26,8 @@ pub enum SceneNode {
     Text(Text),
     /// An image leaf node (no children) — bitmap sampled from `ImageSource`.
     Image(Image),
+    /// Conditional operator — resolved to one of its branches at flatten time.
+    Condition(Condition),
 }
 
 impl SceneNode {
@@ -34,15 +37,21 @@ impl SceneNode {
             SceneNode::Frame(f) => &f.label,
             SceneNode::Text(t) => &t.label,
             SceneNode::Image(i) => &i.label,
+            SceneNode::Condition(_) => "",
         }
     }
 
     /// Child nodes of this node (empty slice for leaf nodes).
+    ///
+    /// `Condition` returns `&[]` because its branches are not children in
+    /// the scene-graph sense — only one is selected at flatten time, and
+    /// resolving requires an `ExpressionEngine` which this accessor lacks.
     pub fn children(&self) -> &[SceneNode] {
         match self {
             SceneNode::Frame(f) => &f.children,
             SceneNode::Text(_) => &[],
             SceneNode::Image(_) => &[],
+            SceneNode::Condition(_) => &[],
         }
     }
 
@@ -55,6 +64,9 @@ impl SceneNode {
             SceneNode::Frame(f) => f.to_accesskit_node(),
             SceneNode::Text(t) => t.to_accesskit_node(),
             SceneNode::Image(i) => i.to_accesskit_node(),
+            SceneNode::Condition(_) => {
+                unreachable!("Condition must be resolved before AccessKit projection")
+            }
         }
     }
 }
@@ -223,6 +235,96 @@ impl Image {
     }
 }
 
+/// Conditional operator — selects one of two branches at flatten time.
+///
+/// The `when` expression is evaluated by an [`ExpressionEngine`] during
+/// [`flatten_scene`]. On `true` the `then` branch is emitted; on `false`
+/// the `else_branch` is emitted if present, otherwise nothing is emitted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Condition {
+    /// CEL source for the predicate.
+    pub when: String,
+    /// Subtree selected when `when` evaluates to `true`.
+    pub then: Box<SceneNode>,
+    /// Subtree selected when `when` evaluates to `false`. Optional.
+    #[serde(rename = "else", default)]
+    pub else_branch: Option<Box<SceneNode>>,
+}
+
+// ── Condition resolution (pre-flatten pass) ──────────────────────────────
+
+/// Resolve every [`Condition`] in `root` into its selected branch, returning a
+/// condition-free clone of the tree. Leaves `Frame` / `Text` / `Image` untouched
+/// aside from filtering children whose `Condition` resolved to nothing.
+///
+/// - `when` evaluates to `true` → keep (recursively resolved) `then` branch.
+/// - `when` evaluates to `false` → keep (recursively resolved) `else` branch,
+///   or `None` when `else` is absent.
+/// - parse / eval / non-bool failures log a warning to stderr and are treated
+///   as `false`, matching the graceful-degradation policy documented in
+///   `.iteration-5-criteria.md` §T-5.
+///
+/// Returns `None` only when the root itself is a `Condition` whose selected
+/// branch is absent. Callers typically `.expect(...)` because a resolved-to-
+/// nothing root would render a blank scene.
+///
+/// This pass exists so [`flatten_scene`] stays engine-free — the renderer in
+/// `sdui-runtime-wgpu` never learns about `Condition` or the expression engine.
+pub fn resolve_scene<E: ExpressionEngine>(root: &SceneNode, engine: &E) -> Option<SceneNode> {
+    match root {
+        SceneNode::Frame(f) => {
+            let children = f
+                .children
+                .iter()
+                .filter_map(|c| resolve_scene(c, engine))
+                .collect();
+            Some(SceneNode::Frame(Frame {
+                label: f.label.clone(),
+                background_color: f.background_color,
+                x: f.x,
+                y: f.y,
+                width: f.width,
+                height: f.height,
+                children,
+            }))
+        }
+        SceneNode::Text(_) | SceneNode::Image(_) => Some(root.clone()),
+        SceneNode::Condition(c) => match resolve_condition_branch(c, engine) {
+            Some(branch) => resolve_scene(branch, engine),
+            None => None,
+        },
+    }
+}
+
+/// Select the branch of a [`Condition`] implied by its `when` expression.
+/// Parse / eval failures warn on stderr and fall through to the `else` branch.
+fn resolve_condition_branch<'a, E: ExpressionEngine>(
+    c: &'a Condition,
+    engine: &E,
+) -> Option<&'a SceneNode> {
+    let compiled = match engine.compile(&c.when) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!(
+                "sdui: condition parse failed: {e} (expr = {:?}); defaulting to false",
+                c.when
+            );
+            return c.else_branch.as_deref();
+        }
+    };
+    match engine.eval_bool(&compiled) {
+        Ok(true) => Some(&c.then),
+        Ok(false) => c.else_branch.as_deref(),
+        Err(e) => {
+            eprintln!(
+                "sdui: condition eval failed: {e} (expr = {:?}); defaulting to false",
+                c.when
+            );
+            c.else_branch.as_deref()
+        }
+    }
+}
+
 // ── Flattening & coordinate resolution ───────────────────────────────────
 
 /// Distinguishes node types in a flattened scene tree.
@@ -321,6 +423,10 @@ pub const ROOT_NODE_ID: NodeId = NodeId(0);
 /// Node IDs are assigned depth-first starting from `NodeId(1)`.
 /// `NodeId(0)` is reserved for [`ROOT_NODE_ID`] (the AccessKit tree root,
 /// not part of the scene graph).
+///
+/// The input is expected to be condition-free — callers must run
+/// [`resolve_scene`] first. Encountering a `Condition` here is a bug and
+/// triggers `unreachable!`, mirroring [`SceneNode::to_accesskit_node`].
 pub fn flatten_scene(root: &SceneNode) -> Vec<FlatNode> {
     let mut result = Vec::new();
     let mut next_id = 1u64;
@@ -334,12 +440,11 @@ fn flatten_recursive(
     parent_abs_y: f32,
     next_id: &mut u64,
     out: &mut Vec<FlatNode>,
-) -> NodeId {
-    let my_id = NodeId(*next_id);
-    *next_id += 1;
-
+) -> Option<NodeId> {
     match node {
         SceneNode::Frame(f) => {
+            let my_id = NodeId(*next_id);
+            *next_id += 1;
             let abs_x = parent_abs_x + f.x;
             let abs_y = parent_abs_y + f.y;
 
@@ -360,12 +465,15 @@ fn flatten_recursive(
             let child_ids: Vec<NodeId> = f
                 .children
                 .iter()
-                .map(|child| flatten_recursive(child, abs_x, abs_y, next_id, out))
+                .filter_map(|child| flatten_recursive(child, abs_x, abs_y, next_id, out))
                 .collect();
 
             out[my_index].child_ids = child_ids;
+            Some(my_id)
         }
         SceneNode::Text(t) => {
+            let my_id = NodeId(*next_id);
+            *next_id += 1;
             let abs_x = parent_abs_x + t.x;
             let abs_y = parent_abs_y + t.y;
 
@@ -383,8 +491,11 @@ fn flatten_recursive(
                 height: t.height,
                 child_ids: Vec::new(),
             });
+            Some(my_id)
         }
         SceneNode::Image(i) => {
+            let my_id = NodeId(*next_id);
+            *next_id += 1;
             let abs_x = parent_abs_x + i.x;
             let abs_y = parent_abs_y + i.y;
 
@@ -401,10 +512,12 @@ fn flatten_recursive(
                 height: i.height,
                 child_ids: Vec::new(),
             });
+            Some(my_id)
+        }
+        SceneNode::Condition(_) => {
+            unreachable!("Condition must be resolved via resolve_scene before flatten")
         }
     }
-
-    my_id
 }
 
 #[cfg(test)]
@@ -722,5 +835,150 @@ mod tests {
         assert_eq!(bounds.y0, 0.0);
         assert_eq!(bounds.x1, 50.0);
         assert_eq!(bounds.y1, 50.0);
+    }
+
+    fn frame_a() -> SceneNode {
+        SceneNode::Frame(Frame::new("A", [1.0, 0.0, 0.0, 1.0], 0.0, 0.0, 10.0, 10.0))
+    }
+
+    fn frame_b() -> SceneNode {
+        SceneNode::Frame(Frame::new("B", [0.0, 1.0, 0.0, 1.0], 0.0, 0.0, 20.0, 20.0))
+    }
+
+    #[test]
+    fn condition_node_json_round_trip() {
+        let scene = SceneNode::Condition(Condition {
+            when: "true".into(),
+            then: Box::new(frame_a()),
+            else_branch: Some(Box::new(frame_b())),
+        });
+
+        let json = serde_json::to_string_pretty(&scene).expect("serialize");
+        assert!(json.contains("\"type\": \"Condition\""));
+        assert!(json.contains("\"then\""));
+        assert!(json.contains("\"else\""));
+        assert!(!json.contains("else_branch"));
+
+        let deserialized: SceneNode = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(scene, deserialized);
+    }
+
+    #[test]
+    fn condition_with_missing_else_deserializes() {
+        let json = r#"{
+            "type": "Condition",
+            "when": "true",
+            "then": {
+                "type": "Frame",
+                "label": "A",
+                "background_color": [1.0, 0.0, 0.0, 1.0],
+                "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0
+            }
+        }"#;
+        let decoded: SceneNode = serde_json::from_str(json).expect("deserialize");
+        match decoded {
+            SceneNode::Condition(c) => {
+                assert_eq!(c.when, "true");
+                assert!(c.else_branch.is_none());
+            }
+            _ => panic!("expected Condition"),
+        }
+    }
+
+    #[test]
+    fn resolve_scene_true_selects_then() {
+        let scene = SceneNode::Condition(Condition {
+            when: "true".into(),
+            then: Box::new(frame_a()),
+            else_branch: Some(Box::new(frame_b())),
+        });
+        let resolved =
+            resolve_scene(&scene, &sdui_cel::CelEngine::new()).expect("root resolved to a branch");
+        let flat = flatten_scene(&resolved);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].label, "A");
+        assert_eq!(flat[0].id, NodeId(1));
+    }
+
+    #[test]
+    fn resolve_scene_false_selects_else() {
+        let scene = SceneNode::Condition(Condition {
+            when: "false".into(),
+            then: Box::new(frame_a()),
+            else_branch: Some(Box::new(frame_b())),
+        });
+        let resolved =
+            resolve_scene(&scene, &sdui_cel::CelEngine::new()).expect("root resolved to a branch");
+        let flat = flatten_scene(&resolved);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].label, "B");
+        assert_eq!(flat[0].id, NodeId(1));
+    }
+
+    #[test]
+    fn resolve_scene_false_with_missing_else_emits_none() {
+        let scene = SceneNode::Condition(Condition {
+            when: "false".into(),
+            then: Box::new(frame_a()),
+            else_branch: None,
+        });
+        assert!(resolve_scene(&scene, &sdui_cel::CelEngine::new()).is_none());
+    }
+
+    #[test]
+    fn resolve_scene_inside_frame_filters_child() {
+        let scene = SceneNode::Frame(Frame {
+            label: "parent".into(),
+            background_color: [0.0; 4],
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            children: vec![
+                SceneNode::Condition(Condition {
+                    when: "true".into(),
+                    then: Box::new(frame_a()),
+                    else_branch: None,
+                }),
+                SceneNode::Condition(Condition {
+                    when: "false".into(),
+                    then: Box::new(frame_b()),
+                    else_branch: None,
+                }),
+            ],
+        });
+        let resolved = resolve_scene(&scene, &sdui_cel::CelEngine::new()).expect("root resolved");
+        let flat = flatten_scene(&resolved);
+        assert_eq!(flat.len(), 2);
+        assert_eq!(flat[0].id, NodeId(1));
+        assert_eq!(flat[0].child_ids, vec![NodeId(2)]);
+        assert_eq!(flat[1].label, "A");
+        assert_eq!(flat[1].id, NodeId(2));
+    }
+
+    #[test]
+    fn resolve_scene_eval_failure_treated_as_false() {
+        let scene = SceneNode::Condition(Condition {
+            when: "1 + 1".into(),
+            then: Box::new(frame_a()),
+            else_branch: Some(Box::new(frame_b())),
+        });
+        let resolved = resolve_scene(&scene, &sdui_cel::CelEngine::new()).expect("root resolved");
+        let flat = flatten_scene(&resolved);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].label, "B");
+    }
+
+    #[test]
+    fn resolve_scene_parse_failure_treated_as_false_with_warning() {
+        let scene = SceneNode::Condition(Condition {
+            when: "1 +".into(),
+            then: Box::new(frame_a()),
+            else_branch: Some(Box::new(frame_b())),
+        });
+        let resolved = resolve_scene(&scene, &sdui_cel::CelEngine::new()).expect("root resolved");
+        let flat = flatten_scene(&resolved);
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat[0].label, "B");
     }
 }

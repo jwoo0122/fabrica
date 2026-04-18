@@ -11,3 +11,4 @@ publish.workspace = true
 accesskit = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sdui-cel = { path = "../sdui-cel" }
