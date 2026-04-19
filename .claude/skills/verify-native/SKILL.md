@@ -43,7 +43,7 @@ mkdir -p "$OUT"
 ```bash
 cargo build -p mock-server 2>&1 | tail -5
 # Start mock-server briefly on its own to probe — xtask will restart it.
-/Users/jinwoo/repos/fabrica/target/debug/mock-server 8138 &
+target/debug/mock-server 8138 &
 MOCK_PROBE_PID=$!
 sleep 1
 curl -sf http://localhost:8138/health || { echo "PREFLIGHT FAIL: /health"; kill $MOCK_PROBE_PID; exit 1; }
@@ -128,7 +128,63 @@ If `examples/$EXAMPLE/golden/native.png` exists, use `Read` on both images and r
 kill "$(cat "$OUT/app.pid")" 2>/dev/null || true
 ```
 
-### 7. Write the report
+### 7. Live-reload probe (`condition-panel` only)
+
+When `EXAMPLE=condition-panel`, verify native file-watcher reload against a disposable temp file so the repo worktree stays clean:
+
+```bash
+cp examples/condition-panel/scene.json /tmp/condition-panel-reload.json
+cargo xtask run-native --scene-path /tmp/condition-panel-reload.json --background --pidfile "$OUT/reload-app.pid" 2>&1 | tee "$OUT/reload-build.log" | tail -40
+sleep 2
+cargo xtask inspect-ax --pid "$(cat "$OUT/reload-app.pid")" > "$OUT/ax-before.json"
+python3 - <<'PY' "$OUT/ax-before.json" > "$OUT/before-summary.txt"
+import json, sys
+text = json.dumps(json.load(open(sys.argv[1])))
+print('image_count=', text.count('"role": "image"'), sep='')
+print('has_placeholder=', 'placeholder: image disabled' in text, sep='')
+PY
+python3 - <<'PY' /tmp/condition-panel-reload.json
+from pathlib import Path
+p = Path(__import__('sys').argv[1])
+text = p.read_text()
+text = text.replace('"when": "true"', '"when": "false"', 1)
+p.write_text(text)
+PY
+sleep 2
+cargo xtask inspect-ax --pid "$(cat "$OUT/reload-app.pid")" > "$OUT/ax-after.json"
+python3 - <<'PY' "$OUT/ax-after.json" > "$OUT/after-summary.txt"
+import json, sys
+text = json.dumps(json.load(open(sys.argv[1])))
+print('image_count=', text.count('"role": "image"'), sep='')
+print('has_placeholder=', 'placeholder: image disabled' in text, sep='')
+PY
+```
+
+Assert for the edited state:
+- `image_count=0`
+- `has_placeholder=True`
+- **No `cargo build` occurs between editing `/tmp/condition-panel-reload.json` and the second `inspect-ax`.**
+
+Malformed JSON sub-probe:
+
+```bash
+echo '{ broken' > /tmp/condition-panel-reload.json
+sleep 2
+cargo xtask inspect-ax --pid "$(cat "$OUT/reload-app.pid")" > "$OUT/ax-malformed.json"
+python3 - <<'PY' "$OUT/ax-malformed.json" > "$OUT/malformed-summary.txt"
+import json, sys
+text = json.dumps(json.load(open(sys.argv[1])))
+print('image_count=', text.count('"role": "image"'), sep='')
+print('has_placeholder=', 'placeholder: image disabled' in text, sep='')
+PY
+kill "$(cat "$OUT/reload-app.pid")" 2>/dev/null || true
+```
+
+Assert for malformed input:
+- previous valid state is preserved (`image_count=0`, `has_placeholder=True`)
+- stderr contains a reload warning, not a panic
+
+### 8. Write the report
 
 Create `$OUT/report.md` with these sections:
 

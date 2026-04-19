@@ -2,7 +2,7 @@
 name: verify-web
 description: Build the wasm example of this Rust+wgpu SDUI runtime, serve it locally, then drive headless Chrome via the agent-browser skill to inspect the AccessKit mirror-DOM, capture screenshots, and read console errors. Use after any runtime change to close the web-side feedback loop.
 argument-hint: [example-name]
-allowed-tools: Bash(cargo *) Bash(curl *) Bash(kill *) Bash(mkdir *) Bash(cat *) Read Write Edit Glob Grep
+allowed-tools: Bash(cargo *) Bash(curl *) Bash(kill *) Bash(mkdir *) Bash(cat *) Bash(agent-browser *) Read Write Edit Glob Grep
 ---
 
 # Verify web (browser)
@@ -44,7 +44,7 @@ mkdir -p "$OUT"
 
 ```bash
 cargo build -p mock-server 2>&1 | tail -5
-/Users/jinwoo/repos/fabrica/target/debug/mock-server 8138 &
+target/debug/mock-server 8138 &
 MOCK_PROBE_PID=$!
 sleep 1
 curl -sf http://localhost:8138/health || { echo "PREFLIGHT FAIL: /health"; kill $MOCK_PROBE_PID; exit 1; }
@@ -84,33 +84,78 @@ If `timeout`: record and stop.
 
 ### 3. Drive with agent-browser
 
-Use the bundled `agent-browser` skill (via `mcp__claude-in-chrome__*` tools once they are loaded; load them through `ToolSearch` with `select:mcp__claude-in-chrome__<tool_name>` as needed).
+Use the bundled `agent-browser` CLI directly. Keep one isolated session name per verification run:
 
-Steps:
+```bash
+SESSION="verify-web-$STAMP"
+agent-browser --session "$SESSION" open "http://localhost:$PORT/examples/$EXAMPLE/"
+agent-browser --session "$SESSION" wait 1500
+agent-browser --session "$SESSION" snapshot > "$OUT/ax-tree.txt"
+agent-browser --session "$SESSION" eval '(() => {
+  const root = document.querySelector("div[role=\"application\"]");
+  if (!root) return null;
+  const walk = (el) => ({
+    role: el.getAttribute("role"),
+    label: el.getAttribute("aria-label"),
+    id: el.id,
+    children: [...el.children].map(walk),
+  });
+  return JSON.stringify(walk(root));
+})()' > "$OUT/ax-tree.json"
+agent-browser --session "$SESSION" screenshot "$OUT/shot.png"
+agent-browser --session "$SESSION" console > "$OUT/console.log" || true
+agent-browser --session "$SESSION" errors > "$OUT/errors.log" || true
+```
 
-1. **Tab context** — `mcp__claude-in-chrome__tabs_context_mcp` (never reuse tabs from prior sessions)
-2. **Navigate** — create a new tab at `http://localhost:$PORT/examples/$EXAMPLE`
-3. **Wait for mirror root** — poll for `div[role="application"]` to exist, up to 30s. This is AccessKit's root element.
-4. **Dump AX mirror tree**:
+If `div[role="application"]` is absent → AccessKit mirror DOM is missing; record and stop.
 
-   ```js
-   (() => {
-     const root = document.querySelector('div[role="application"]');
-     if (!root) return null;
-     const walk = (el) => ({
-       role: el.getAttribute('role'),
-       label: el.getAttribute('aria-label'),
-       id: el.id,
-       children: [...el.children].map(walk),
-     });
-     return walk(root);
-   })()
-   ```
+### 3.7 Live-reload via textarea (`condition-panel` only)
 
-   Save to `$OUT/ax-tree.json`. If root absent → AccessKit web adapter missing; record and stop.
-5. **Screenshot** — full page → `$OUT/shot.png`
-6. **Console messages** — filtered to `ERROR|WARN|wgpu|panic` → `$OUT/console.log`. Specifically look for WebGPU adapter-acquisition failures; Safari 26+/FF 141+/Chromium are required.
-7. **Example-specific steps** — if `examples/$EXAMPLE/verify-web.json` exists (a declarative step list), execute each step and log outcomes.
+When `EXAMPLE=condition-panel`, verify the manual apply loop without rebuilding wasm:
+
+```bash
+agent-browser --session "$SESSION" eval '(() => {
+  const e = document.getElementById("scene-editor");
+  e.value = e.value.replace("\"when\": \"true\"", "\"when\": \"false\"");
+  return true;
+})()' > "$OUT/live-reload-edit.txt"
+agent-browser --session "$SESSION" click '#scene-apply'
+agent-browser --session "$SESSION" wait 500
+agent-browser --session "$SESSION" eval '(() => JSON.stringify({
+  imageCount: document.querySelectorAll("img").length,
+  placeholderCount: document.querySelectorAll("span[aria-label*=\"placeholder\"]").length,
+  errorHidden: document.getElementById("scene-error")?.hidden ?? null
+}))()' > "$OUT/live-reload-after.json"
+```
+
+Assert for the edited state:
+- `imageCount === 0`
+- `placeholderCount >= 1`
+- `errorHidden === true`
+
+Malformed JSON sub-probe:
+
+```bash
+agent-browser --session "$SESSION" eval '(() => {
+  const e = document.getElementById("scene-editor");
+  e.value = "{ broken";
+  return true;
+})()' > "$OUT/live-reload-malformed-edit.txt"
+agent-browser --session "$SESSION" click '#scene-apply'
+agent-browser --session "$SESSION" wait 500
+agent-browser --session "$SESSION" eval '(() => JSON.stringify({
+  imageCount: document.querySelectorAll("img").length,
+  placeholderCount: document.querySelectorAll("span[aria-label*=\"placeholder\"]").length,
+  errorHidden: document.getElementById("scene-error")?.hidden ?? null,
+  errorText: document.getElementById("scene-error")?.textContent ?? null
+}))()' > "$OUT/live-reload-malformed.json"
+```
+
+Assert for malformed input:
+- `errorHidden === false`
+- `errorText` contains `parse error`
+- previous success state is preserved (`imageCount === 0`, `placeholderCount >= 1`)
+- **No `cargo build` / wasm rebuild occurs between edit and post-check.**
 
 ### 4. Teardown
 
@@ -118,7 +163,11 @@ Steps:
 kill "$(cat "$OUT/server.pid")" 2>/dev/null || true
 ```
 
-Also close the browser tab you opened (don't leak tabs).
+Also close the browser session you opened:
+
+```bash
+agent-browser --session "$SESSION" close || true
+```
 
 ### 5. Write the report
 
