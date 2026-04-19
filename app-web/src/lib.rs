@@ -26,9 +26,6 @@ mod wasm_entry {
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestInit, RequestMode, Response};
 
-    /// scene.json is embedded at build time so no async fetch is needed.
-    const SCENE_JSON: &str = include_str!("../../examples/smoke/scene.json");
-
     /// Shared render state — owned by the start function, borrowed by the
     /// render loop closures and by each spawned image loader.
     struct RenderState {
@@ -38,11 +35,24 @@ mod wasm_entry {
         scene: SceneNode,
     }
 
-    /// Parse the embedded `scene.json`, resolve every `Condition` against a
-    /// fresh `CelEngine`, and return the condition-free tree. Any failure is
-    /// surfaced as `JsValue` so `start()` can reject cleanly.
-    fn load_resolved_scene() -> Result<SceneNode, JsValue> {
-        let raw: SceneNode = serde_json::from_str(SCENE_JSON)
+    /// Fetch `./scene.json`, parse it as a `SceneNode`, resolve every
+    /// `Condition` against a fresh `CelEngine`, and return the condition-free
+    /// tree. Any failure is surfaced as `JsValue` so startup can reject cleanly.
+    async fn load_resolved_scene() -> Result<SceneNode, JsValue> {
+        let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+        let resp_value = JsFuture::from(window.fetch_with_str("./scene.json")).await?;
+        let resp: Response = resp_value.dyn_into()?;
+        if !resp.ok() {
+            return Err(JsValue::from_str(&format!(
+                "scene.json fetch failed: HTTP {}",
+                resp.status()
+            )));
+        }
+        let text = JsFuture::from(resp.text()?).await?;
+        let json = text
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("scene.json response was not a string"))?;
+        let raw: SceneNode = serde_json::from_str(&json)
             .map_err(|e| JsValue::from_str(&format!("scene.json parse error: {e}")))?;
         let engine = CelEngine::new();
         resolve_scene(&raw, &engine)
@@ -52,39 +62,44 @@ mod wasm_entry {
     #[wasm_bindgen(start)]
     pub fn start() -> Result<(), JsValue> {
         console_error_panic_hook::set_once();
-        mount_mirror_root()?;
-        wasm_bindgen_futures::spawn_local(run());
+        wasm_bindgen_futures::spawn_local(async {
+            if let Err(e) = run().await {
+                web_sys::console::error_1(&JsValue::from_str(&format!("sdui boot failure: {e:?}")));
+            }
+        });
         Ok(())
     }
 
-    /// Build a hierarchical mirror DOM tree reflecting the scene graph.
-    fn mount_mirror_root() -> Result<(), JsValue> {
-        let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
-        let document = window
-            .document()
-            .ok_or_else(|| JsValue::from_str("no document"))?;
+    fn stage_mount_parent(document: &web_sys::Document) -> Result<web_sys::Element, JsValue> {
+        if let Some(host) = document.get_element_by_id("sdui-canvas-host") {
+            return Ok(host);
+        }
         let body = document
             .body()
             .ok_or_else(|| JsValue::from_str("no body"))?;
+        Ok(body.unchecked_into::<web_sys::Element>())
+    }
 
-        // Idempotent: skip if already mounted.
-        if document
-            .query_selector("div[role=\"application\"]")?
-            .is_some()
-        {
-            return Ok(());
+    /// Build a hierarchical mirror DOM tree reflecting the scene graph.
+    fn mount_mirror_root(
+        document: &web_sys::Document,
+        scene: &SceneNode,
+    ) -> Result<web_sys::Element, JsValue> {
+        let parent = stage_mount_parent(document)?;
+
+        if let Some(existing) = document.get_element_by_id("sdui-root") {
+            existing.remove();
         }
 
         let root = document.create_element("div")?;
         root.set_attribute("role", "application")?;
-        root.set_attribute("aria-label", "sdui smoke")?;
+        root.set_attribute("aria-label", "sdui runtime")?;
         root.set_id("sdui-root");
-        body.append_child(&root)?;
+        parent.append_child(&root)?;
 
-        let scene = load_resolved_scene()?;
-        mount_mirror_node(&document, &root, &scene)?;
+        mount_mirror_node(document, &root, scene)?;
 
-        Ok(())
+        Ok(root)
     }
 
     /// Recursively create mirror DOM elements for a scene node and its children.
@@ -157,23 +172,25 @@ mod wasm_entry {
         }
     }
 
-    async fn run() {
-        let scene = load_resolved_scene().expect("scene.json load/resolve");
+    async fn run() -> Result<(), JsValue> {
+        let scene = load_resolved_scene().await?;
 
-        let window = web_sys::window().expect("no window");
-        let document = window.document().expect("no document");
-        let body = document.body().expect("no body");
+        let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+        let document = window
+            .document()
+            .ok_or_else(|| JsValue::from_str("no document"))?;
+        let mount_parent = stage_mount_parent(&document)?;
+
+        mount_mirror_root(&document, &scene)?;
 
         // Create canvas element.
         let canvas = document
-            .create_element("canvas")
-            .expect("create canvas")
-            .dyn_into::<web_sys::HtmlCanvasElement>()
-            .expect("not a canvas");
+            .create_element("canvas")?
+            .dyn_into::<web_sys::HtmlCanvasElement>()?;
         canvas.set_id("sdui-canvas");
         canvas.set_width(800);
         canvas.set_height(600);
-        body.append_child(&canvas).expect("append canvas");
+        mount_parent.append_child(&canvas)?;
 
         // wgpu init — WebGPU only, no WebGL2 fallback (Q3 decision).
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -183,7 +200,7 @@ mod wasm_entry {
 
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
-            .expect("create_surface from canvas");
+            .map_err(|e| JsValue::from_str(&format!("create_surface from canvas failed: {e:?}")))?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -192,7 +209,7 @@ mod wasm_entry {
                 force_fallback_adapter: false,
             })
             .await
-            .expect("No WebGPU adapter");
+            .map_err(|e| JsValue::from_str(&format!("No WebGPU adapter: {e:?}")))?;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -200,7 +217,7 @@ mod wasm_entry {
                 ..Default::default()
             })
             .await
-            .expect("request_device");
+            .map_err(|e| JsValue::from_str(&format!("request_device failed: {e:?}")))?;
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -247,6 +264,8 @@ mod wasm_entry {
                 load_image_with_retry(state, source).await;
             });
         }
+
+        Ok(())
     }
 
     /// Fetch-and-register one image source, retrying every 1 s on error. On

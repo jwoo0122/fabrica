@@ -245,7 +245,7 @@ fn cmd_run_native(example: &str, background: bool, pidfile: Option<&Path>) -> st
 }
 
 /// Build the wasm artefact + JS glue into `target/app-web-dist/`.
-fn build_web_dist(root: &Path) -> std::io::Result<PathBuf> {
+fn build_web_dist(root: &Path, example: &str) -> std::io::Result<PathBuf> {
     ensure_wasm_target()?;
     ensure_wasm_bindgen_cli()?;
 
@@ -299,6 +299,16 @@ fn build_web_dist(root: &Path) -> std::io::Result<PathBuf> {
     let html_dst = dist.join("index.html");
     std::fs::copy(&html_src, &html_dst)?;
 
+    let scene_src = root.join("examples").join(example).join("scene.json");
+    if !scene_src.exists() {
+        return Err(std::io::Error::other(format!(
+            "example scene missing: {}",
+            scene_src.display()
+        )));
+    }
+    let scene_dst = dist.join("scene.json");
+    std::fs::copy(&scene_src, &scene_dst)?;
+
     Ok(dist)
 }
 
@@ -309,7 +319,7 @@ fn cmd_run_web(
     pidfile: Option<&Path>,
 ) -> std::io::Result<()> {
     let root = workspace_root();
-    let dist = build_web_dist(&root)?;
+    let dist = build_web_dist(&root, example)?;
 
     // Co-boot mock-server so fetches from the wasm app succeed first-try.
     let mut mock_child = spawn_mock_server(&root)?;
@@ -344,28 +354,29 @@ fn cmd_run_web(
     result
 }
 
-fn serve_web_blocking(dist: &Path, port: u16, _example: &str) -> std::io::Result<()> {
+fn serve_web_blocking(dist: &Path, port: u16, example: &str) -> std::io::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
         use axum::{response::IntoResponse, routing::get, Router};
         use tower_http::services::ServeDir;
 
         let dist = dist.to_path_buf();
-        // `/examples/<name>` and `/examples/<name>/` both serve the wasm
-        // bundle — the example name is a placeholder in Iteration 0.
-        let serve_bundle = ServeDir::new(dist.clone()).append_index_html_on_directories(true);
-        let serve_bundle_2 = ServeDir::new(dist).append_index_html_on_directories(true);
+        let redirect_target = format!("/examples/{example}/");
+        let example_mount = format!("/examples/{example}");
+        // `/examples/<selected>` and `/examples/<selected>/` both serve the
+        // selected bundle, which now includes that example's scene.json.
+        let serve_bundle = ServeDir::new(dist).append_index_html_on_directories(true);
 
         let app = Router::new()
             .route("/health", get(|| async { "ok" }))
             .route(
                 "/",
-                get(|| async { axum::response::Redirect::to("/examples/smoke/") }),
+                get(move || {
+                    let redirect_target = redirect_target.clone();
+                    async move { axum::response::Redirect::to(&redirect_target) }
+                }),
             )
-            .nest_service("/examples/smoke", serve_bundle)
-            // Fallback route for any future example name; points at the same
-            // bundle until per-example builds exist.
-            .nest_service("/examples", serve_bundle_2)
+            .nest_service(&example_mount, serve_bundle)
             .fallback(|| async {
                 (axum::http::StatusCode::NOT_FOUND, "not found").into_response()
             });

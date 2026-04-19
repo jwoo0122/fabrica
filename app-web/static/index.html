@@ -6,6 +6,25 @@
     <title>sdui smoke</title>
   </head>
   <body>
+    <div
+      id="sdui-stage"
+      style="display:flex;gap:1rem;align-items:flex-start;padding:1rem;"
+    >
+      <div id="sdui-canvas-host"></div>
+      <aside id="sdui-panel" style="width:360px;">
+        <textarea
+          id="scene-editor"
+          rows="20"
+          style="width:100%;font-family:monospace;"
+        ></textarea>
+        <button id="scene-apply" type="button">Apply</button>
+        <pre
+          id="scene-error"
+          hidden
+          style="color:#b00;white-space:pre-wrap;"
+        ></pre>
+      </aside>
+    </div>
     <!--
       Served by `cargo xtask run-web`. The referenced .wasm module is placed
       next to this file by xtask's wasm-bindgen invocation; see

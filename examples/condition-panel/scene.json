@@ -1,0 +1,85 @@
+{
+  "type": "Frame",
+  "label": "condition-panel-root",
+  "background_color": [0.12, 0.14, 0.18, 1.0],
+  "x": 60.0,
+  "y": 60.0,
+  "width": 420.0,
+  "height": 360.0,
+  "children": [
+    {
+      "type": "Text",
+      "label": "condition-panel-title",
+      "content": "Condition panel baseline",
+      "font_size": 28.0,
+      "color": [1.0, 1.0, 1.0, 1.0],
+      "x": 20.0,
+      "y": 20.0,
+      "width": 300.0,
+      "height": 40.0
+    },
+    {
+      "type": "Condition",
+      "when": "true",
+      "then": {
+        "type": "Image",
+        "label": "condition-panel-image",
+        "alt": "Condition panel smoke image",
+        "source": {
+          "kind": "url",
+          "url": "http://localhost:8138/assets/smoke.png"
+        },
+        "x": 20.0,
+        "y": 80.0,
+        "width": 120.0,
+        "height": 120.0
+      },
+      "else": {
+        "type": "Text",
+        "label": "condition-panel-placeholder",
+        "content": "placeholder: image disabled",
+        "font_size": 18.0,
+        "color": [0.8, 0.8, 0.8, 1.0],
+        "x": 20.0,
+        "y": 110.0,
+        "width": 220.0,
+        "height": 40.0
+      }
+    },
+    {
+      "type": "Condition",
+      "when": "false",
+      "then": {
+        "type": "Frame",
+        "label": "condition-panel-false-frame",
+        "background_color": [0.9, 0.2, 0.5, 1.0],
+        "x": 180.0,
+        "y": 80.0,
+        "width": 180.0,
+        "height": 120.0
+      },
+      "else": {
+        "type": "Text",
+        "label": "condition-panel-false-placeholder",
+        "content": "second condition off",
+        "font_size": 18.0,
+        "color": [0.6, 0.9, 1.0, 1.0],
+        "x": 180.0,
+        "y": 120.0,
+        "width": 180.0,
+        "height": 40.0
+      }
+    },
+    {
+      "type": "Text",
+      "label": "condition-panel-footer",
+      "content": "Edit scene.json to flip the branches.",
+      "font_size": 16.0,
+      "color": [0.9, 0.9, 0.9, 1.0],
+      "x": 20.0,
+      "y": 250.0,
+      "width": 320.0,
+      "height": 30.0
+    }
+  ]
+}
