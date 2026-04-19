@@ -14,7 +14,7 @@ The motivating constraint: the same Scene graph must drive both the runtime (wha
 
 ## Current capabilities
 
-Implemented through **Iteration 5**. See [`SPRINTS.md`](./SPRINTS.md) for the completed-milestone index. The project follows a strict "ship the example every iteration" loop — each milestone below renders end-to-end on both platforms with an automated verification pass:
+Implemented through **Iteration 6**. See [`SPRINTS.md`](./SPRINTS.md) for the completed-milestone index. The project follows a strict "ship the example every iteration" loop — each milestone below renders end-to-end on both platforms with an automated verification pass:
 
 | Iteration | What it added                                                                                                                                               |
 |-----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -24,6 +24,7 @@ Implemented through **Iteration 5**. See [`SPRINTS.md`](./SPRINTS.md) for the co
 | 3         | `Text` leaf nodes rendered via [glyphon](https://crates.io/crates/glyphon) (cosmic-text + wgpu) with bundled Noto Sans. Single render pass — quads then text overlay. |
 | 4         | `Image` leaf rendered via the [`image`](https://crates.io/crates/image) crate texture upload + wgpu sampled pipeline. mock-server serves the bundled test asset. |
 | 5         | First operator: `Condition` with CEL-driven branch selection (literal-only env). `sdui-cel` realized via [`cel-interpreter`](https://crates.io/crates/cel-interpreter). `resolve_scene` pre-pass keeps the renderer byte-identical. |
+| 6         | Live scene reload for manual `Condition` experimentation. Web adds a side panel with textarea + **Apply**; native adds `--scene-path` plus file-watcher reload. New `examples/condition-panel/scene.json` exercises the loop on both surfaces. |
 
 ### Scope today
 
@@ -35,7 +36,7 @@ Implemented through **Iteration 5**. See [`SPRINTS.md`](./SPRINTS.md) for the co
 
 ### Not yet
 
-`ForEach`, `Fetching`, `PresetRef`, Scene-level CEL variable bindings, preset library resolver, router / state machine, hot reload, editor. Each has a stub crate and a decision in `CLAUDE.md`; none are implemented.
+`ForEach`, `Fetching`, `PresetRef`, Scene-level CEL variable bindings, preset library resolver, router / state machine, editor. Each has a stub crate and a decision in `CLAUDE.md`; none are implemented.
 
 ---
 
@@ -71,6 +72,7 @@ app-web/            wasm binary (WebGPU canvas + ARIA mirror DOM)
 examples/
   mock-server/      Static JSON test server (for Fetching node)
   smoke/            Minimal scene exercising Frame + Text + Image
+  condition-panel/  Live-reload exercise scene for manual Condition toggling
 xtask/              cargo xtask subcommand runner
 assets/fonts/       Bundled Noto Sans (SIL OFL)
 ```
@@ -90,9 +92,14 @@ cargo xtask build-all
 # Run the macOS native app with the smoke example
 cargo xtask run-native --example smoke
 
-# Serve the wasm build on localhost
-cargo xtask run-web --example smoke --port 8137
-# → open http://localhost:8137/examples/smoke/
+# Or run the live-reload exercise scene
+cargo xtask run-native --example condition-panel
+cargo xtask run-web --example condition-panel --port 8137
+# → open http://localhost:8137/examples/condition-panel/
+
+# Native file-watcher flow against a disposable copy
+cp examples/condition-panel/scene.json /tmp/condition-panel-reload.json
+cargo xtask run-native --scene-path /tmp/condition-panel-reload.json
 
 # Inspect a running native app's accessibility tree
 cargo xtask inspect-ax --pid $(pgrep -n app-native)
@@ -114,7 +121,7 @@ cargo build -p app-web --target wasm32-unknown-unknown
 **One-shot completion is forbidden.** Every runtime change is validated against the example before moving on. Two project skills (`.claude/skills/`) drive this:
 
 - **`/verify-native`** — dumps the AccessKit/NSAccessibility tree to JSON, runs AppleScript probes against it, captures a screenshot via `screencapture -R`.
-- **`/verify-web`** — serves the wasm build, drives a browser session (via [agent-browser](https://github.com/anthropics/claude-code)) to query the ARIA mirror DOM, read console logs, and screenshot the canvas.
+- **`/verify-web`** — serves the wasm build, drives a browser session (via `agent-browser`) to query the ARIA mirror DOM, exercise the textarea + Apply loop, read console logs, and screenshot the canvas.
 
 The key insight: wgpu renders into an opaque `<canvas>`, so pixel OCR is unreliable. AccessKit's web adapter mounts a **parallel `<div>` tree with proper ARIA roles and labels** that mirrors the scene graph. That mirror DOM is the primary assertion surface — not pixels.
 

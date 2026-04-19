@@ -6,7 +6,7 @@ See [`README.md`](./README.md) for the public project overview, quick start, and
 
 ## Repository status
 
-Through **Iteration 5**: primitives `{Frame, Text, Image}` plus the first operator `Condition` (CEL-driven branch selection, literal-only evaluation environment). `sdui-cel` is realized as an `ExpressionEngine` trait backed by `cel-interpreter`. A `resolve_scene` pre-pass substitutes `Condition` nodes at scene-load time, keeping `sdui-runtime-wgpu` byte-identical to its pre-Iteration-5 form. AccessKit tree on native, ARIA mirror DOM on web. See [`README.md`](./README.md) and [`SPRINTS.md`](./SPRINTS.md) for the completed iteration log.
+Through **Iteration 6**: primitives `{Frame, Text, Image}` plus the first operator `Condition` (CEL-driven branch selection, literal-only evaluation environment). `sdui-cel` is realized as an `ExpressionEngine` trait backed by `cel-interpreter`. A `resolve_scene` pre-pass substitutes `Condition` nodes at scene-load time, keeping `sdui-runtime-wgpu` byte-identical to its pre-Iteration-5 form. AccessKit tree on native, ARIA mirror DOM on web. Live-reload infrastructure now lives in `app-native`, `app-web`, and `xtask` — not in `sdui-runtime-wgpu` or `sdui-core`. See [`README.md`](./README.md) and [`SPRINTS.md`](./SPRINTS.md) for the completed iteration log.
 
 ## Non-negotiable principles
 
@@ -78,7 +78,7 @@ CEL references:
 All orchestration goes through `cargo xtask`. Direct cargo commands work but skip conventions.
 
 - `cargo xtask build-all` — build native + wasm in one go
-- `cargo xtask run-native [--example <name>]` — build + launch `app-native`
+- `cargo xtask run-native [--example <name>] [--scene-path <abs>]` — build + launch `app-native`
 - `cargo xtask run-web [--example <name>] [--port <n>]` — wasm build + localhost serve
 - `cargo xtask inspect-ax --pid <pid>` — dump AccessKit tree of a running native app as JSON
 - `cargo test` — unit + integration (scene invariants, CEL edge cases, wire round-trips)

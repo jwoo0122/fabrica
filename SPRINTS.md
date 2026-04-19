@@ -11,14 +11,15 @@ Use the docs in this order:
 
 ## Current baseline on trunk
 
-Completed through **Iteration 5**.
+Completed through **Iteration 6**.
 
 - Runtime primitives shipped: `Frame`, `Text`, `Image`
 - Operator nodes shipped: `Condition` (CEL-driven branch selection, literal-only environment)
 - Expression engine: `ExpressionEngine` trait + `cel-interpreter`-backed `CelEngine` in `sdui-cel`
 - Deployment surfaces shipped: macOS native + WebGPU web
+- Dev-loop affordances shipped: native `--scene-path` + file-watcher reload, web textarea + `Apply` reload, both loading from scene JSON as SSOT
 - Verification surfaces shipped: native AccessKit tree + web ARIA mirror DOM, plus mandatory mock-server preflight
-- Example driving the feedback loop: `examples/smoke/scene.json`
+- Examples driving the feedback loop: `examples/smoke/scene.json`, `examples/condition-panel/scene.json`
 
 ## Completed iterations
 
@@ -30,6 +31,7 @@ Completed through **Iteration 5**.
 | 3 | Complete | `Text` leaf rendering via glyphon with bundled Noto Sans | `sdui-runtime-wgpu/src/lib.rs`, `assets/fonts/NotoSans-Regular.ttf` |
 | 4 | Complete | `Image` leaf rendering via PNG decode + wgpu textured pipeline, mock-server asset serving, async web image load | `sdui-core/src/lib.rs`, `sdui-runtime-wgpu/src/lib.rs`, `app-native/src/main.rs`, `app-web/src/lib.rs`, `examples/mock-server/src/main.rs`, `assets/images/smoke.png` |
 | 5 | Complete | `Condition` operator with literal-only CEL evaluation; `sdui-cel` realized (`ExpressionEngine` + `CelEngine`); `resolve_scene` pre-pass keeps the renderer byte-identical; mock-server preflight added to verification pipeline | `sdui-cel/src/lib.rs`, `sdui-core/src/lib.rs`, `app-native/src/main.rs`, `app-web/src/lib.rs`, `examples/smoke/scene.json`, `examples/mock-server/src/main.rs`, `.claude/skills/verify-*/SKILL.md` |
+| 6 | Complete | Live scene reload for manual `Condition` experimentation: web textarea + `Apply`, native `--scene-path` + file watcher, new `condition-panel` example, and live-reload verification probes. The infrastructure lives in `app-native` / `app-web` / `xtask`, not in `sdui-runtime-wgpu` or `sdui-core`. | `app-native/src/main.rs`, `app-web/src/lib.rs`, `app-web/static/index.html`, `xtask/src/main.rs`, `examples/condition-panel/scene.json`, `examples/condition-panel/README.md`, `.claude/skills/verify-*/SKILL.md` |
 
 ## Notes on the criteria files
 
