@@ -35,6 +35,10 @@ mod wasm_entry {
         scene: SceneNode,
     }
 
+    thread_local! {
+        static APP_STATE: RefCell<Option<Rc<RefCell<RenderState>>>> = RefCell::new(None);
+    }
+
     /// Fetch `./scene.json`, parse it as a `SceneNode`, resolve every
     /// `Condition` against a fresh `CelEngine`, and return the condition-free
     /// tree. Any failure is surfaced as `JsValue` so startup can reject cleanly.
@@ -172,6 +176,45 @@ mod wasm_entry {
         }
     }
 
+    fn spawn_scene_image_loads(state: Rc<RefCell<RenderState>>) {
+        let mut sources = Vec::new();
+        {
+            let s = state.borrow();
+            collect_image_sources(&s.scene, &mut sources);
+        }
+        for source in sources {
+            let state = state.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                load_image_with_retry(state, source).await;
+            });
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn apply_scene_json(json: String) -> Result<(), JsValue> {
+        let raw: SceneNode = serde_json::from_str(&json)
+            .map_err(|e| JsValue::from_str(&format!("parse error: {e}")))?;
+        let resolved = resolve_scene(&raw, &CelEngine::new())
+            .ok_or_else(|| JsValue::from_str("scene resolved to nothing"))?;
+        let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+        let document = window
+            .document()
+            .ok_or_else(|| JsValue::from_str("no document"))?;
+        let state = APP_STATE
+            .with(|slot| slot.borrow().clone())
+            .ok_or_else(|| JsValue::from_str("app state not initialized"))?;
+
+        {
+            let mut app = state.borrow_mut();
+            app.scene = resolved.clone();
+        }
+
+        mount_mirror_root(&document, &resolved)?;
+        spawn_scene_image_loads(state.clone());
+        request_one_redraw(state);
+        Ok(())
+    }
+
     async fn run() -> Result<(), JsValue> {
         let scene = load_resolved_scene().await?;
 
@@ -239,31 +282,20 @@ mod wasm_entry {
         };
         surface.configure(&device, &config);
 
-        let renderer = sdui_runtime_wgpu::Renderer::new(device, queue, format);
-
         let state = Rc::new(RefCell::new(RenderState {
-            renderer,
+            renderer: sdui_runtime_wgpu::Renderer::new(device, queue, format),
             surface,
             config,
             scene,
         }));
 
+        APP_STATE.with(|slot| {
+            *slot.borrow_mut() = Some(state.clone());
+        });
+
         // Initial frame — Images show placeholders until fetches land.
         render_once(&state);
-
-        // Spawn an async loader per Image. Each loop retries every second on
-        // failure; on success, it calls register_image and re-renders once.
-        let mut sources = Vec::new();
-        {
-            let s = state.borrow();
-            collect_image_sources(&s.scene, &mut sources);
-        }
-        for source in sources {
-            let state = state.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                load_image_with_retry(state, source).await;
-            });
-        }
+        spawn_scene_image_loads(state);
 
         Ok(())
     }

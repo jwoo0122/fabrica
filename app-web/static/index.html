@@ -31,10 +31,44 @@
       xtask/src/main.rs `build_web_dist`.
     -->
     <script type="module">
-      import init from "./app_web.js";
-      init("./app_web_bg.wasm").catch((e) => {
-        console.error("sdui boot failure", e);
-      });
+      import init, { apply_scene_json } from "./app_web.js";
+
+      const editor = document.getElementById("scene-editor");
+      const apply = document.getElementById("scene-apply");
+      const error = document.getElementById("scene-error");
+
+      const showError = (e) => {
+        error.textContent = String(e);
+        error.hidden = false;
+      };
+
+      init("./app_web_bg.wasm")
+        .then(async () => {
+          try {
+            const response = await fetch("./scene.json");
+            if (!response.ok) {
+              throw new Error(`scene.json fetch failed: HTTP ${response.status}`);
+            }
+            editor.value = await response.text();
+            error.hidden = true;
+          } catch (e) {
+            showError(e);
+          }
+
+          apply.addEventListener("click", async () => {
+            try {
+              await apply_scene_json(editor.value);
+              error.textContent = "";
+              error.hidden = true;
+            } catch (e) {
+              showError(e);
+            }
+          });
+        })
+        .catch((e) => {
+          console.error("sdui boot failure", e);
+          showError(e);
+        });
     </script>
   </body>
 </html>
