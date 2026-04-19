@@ -509,3 +509,103 @@ fn main() -> Result<(), Box<dyn Error>> {
     event_loop.run_app(&mut app)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_file_path(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("fabrica-{name}-{nanos}.json"))
+    }
+
+    #[test]
+    fn load_resolved_scene_succeeds_for_valid_scene() {
+        let path = temp_file_path("valid-scene");
+        fs::write(
+            &path,
+            r#"{
+  "type": "Frame",
+  "label": "root",
+  "background_color": [0.0, 0.0, 0.0, 1.0],
+  "x": 0.0,
+  "y": 0.0,
+  "width": 100.0,
+  "height": 100.0,
+  "children": [
+    {
+      "type": "Condition",
+      "when": "true",
+      "then": {
+        "type": "Text",
+        "label": "hello-label",
+        "content": "hello",
+        "font_size": 16.0,
+        "color": [1.0, 1.0, 1.0, 1.0],
+        "x": 10.0,
+        "y": 10.0,
+        "width": 80.0,
+        "height": 20.0
+      }
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let scene = load_resolved_scene(&path).expect("valid scene should load");
+        let text = serde_json::to_string(&scene).unwrap();
+        assert!(text.contains("hello-label"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_resolved_scene_fails_for_parse_error() {
+        let path = temp_file_path("parse-error");
+        fs::write(&path, "{ broken").unwrap();
+
+        let err = load_resolved_scene(&path).expect_err("parse error should fail");
+        assert!(err.to_string().contains("key must be a string"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_resolved_scene_fails_when_root_resolves_to_nothing() {
+        let path = temp_file_path("resolve-none");
+        fs::write(
+            &path,
+            r#"{
+  "type": "Condition",
+  "when": "false",
+  "then": {
+    "type": "Text",
+    "label": "never",
+    "content": "never",
+    "font_size": 16.0,
+    "color": [1.0, 1.0, 1.0, 1.0],
+    "x": 0.0,
+    "y": 0.0,
+    "width": 40.0,
+    "height": 20.0
+  }
+}"#,
+        )
+        .unwrap();
+
+        let err = load_resolved_scene(&path).expect_err("resolve-none should fail");
+        assert!(err.to_string().contains("resolved to nothing"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_resolved_scene_fails_for_missing_file() {
+        let path = temp_file_path("missing");
+        let err = load_resolved_scene(&path).expect_err("missing file should fail");
+        assert!(err.to_string().contains("No such file") || err.to_string().contains("os error"));
+    }
+}
