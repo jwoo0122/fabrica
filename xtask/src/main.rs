@@ -33,6 +33,8 @@ enum Cmd {
         #[arg(long, default_value = "smoke")]
         example: String,
         #[arg(long)]
+        scene_path: Option<PathBuf>,
+        #[arg(long)]
         background: bool,
         #[arg(long)]
         pidfile: Option<PathBuf>,
@@ -190,7 +192,12 @@ fn cmd_build_all() -> std::io::Result<()> {
     )
 }
 
-fn cmd_run_native(example: &str, background: bool, pidfile: Option<&Path>) -> std::io::Result<()> {
+fn cmd_run_native(
+    example: &str,
+    scene_path: Option<&Path>,
+    background: bool,
+    pidfile: Option<&Path>,
+) -> std::io::Result<()> {
     let root = workspace_root();
     // Build first so `run` doesn't interleave compile output with window init.
     run(
@@ -214,7 +221,11 @@ fn cmd_run_native(example: &str, background: bool, pidfile: Option<&Path>) -> st
     let mut mock_child = spawn_mock_server(&root)?;
 
     let mut cmd = Command::new(&bin);
-    cmd.arg("--example").arg(example);
+    if let Some(scene_path) = scene_path {
+        cmd.arg("--scene-path").arg(scene_path);
+    } else {
+        cmd.arg("--example").arg(example);
+    }
 
     if background {
         let child = cmd.spawn()?;
@@ -468,9 +479,15 @@ fn main() -> std::io::Result<()> {
         Cmd::BuildAll => cmd_build_all(),
         Cmd::RunNative {
             example,
+            scene_path,
             background,
             pidfile,
-        } => cmd_run_native(&example, background, pidfile.as_deref()),
+        } => cmd_run_native(
+            &example,
+            scene_path.as_deref(),
+            background,
+            pidfile.as_deref(),
+        ),
         Cmd::RunWeb {
             example,
             background,

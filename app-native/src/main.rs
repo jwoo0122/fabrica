@@ -12,12 +12,19 @@
 
 use accesskit::{Node, Role, Tree, TreeId, TreeUpdate};
 use accesskit_winit::{Adapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent};
+use clap::Parser;
+use notify_debouncer_full::{
+    new_debouncer,
+    notify::{RecommendedWatcher, RecursiveMode},
+    DebounceEventResult, Debouncer, RecommendedCache,
+};
 use sdui_cel::CelEngine;
 use sdui_core::{flatten_scene, resolve_scene, ImageSource, SceneNode, ROOT_NODE_ID};
 use sdui_runtime_wgpu::Renderer;
 use std::error::Error;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use wgpu::CurrentSurfaceTexture;
 use winit::{
     application::ApplicationHandler,
@@ -28,28 +35,46 @@ use winit::{
 
 const WINDOW_TITLE: &str = "sdui smoke";
 
-/// Load `examples/smoke/scene.json` relative to the workspace root.
-fn load_scene() -> SceneNode {
-    let candidates = [
-        PathBuf::from("examples/smoke/scene.json"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("examples/smoke/scene.json"),
-    ];
-    for path in &candidates {
-        if let Ok(data) = std::fs::read_to_string(path) {
-            return serde_json::from_str(&data)
-                .unwrap_or_else(|e| panic!("invalid scene.json at {}: {e}", path.display()));
+#[derive(Debug, Parser)]
+struct Args {
+    #[arg(long, default_value = "smoke")]
+    example: String,
+    #[arg(long)]
+    scene_path: Option<PathBuf>,
+}
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("app-native is nested under workspace root")
+        .to_path_buf()
+}
+
+fn resolve_scene_path(args: &Args) -> Result<PathBuf, Box<dyn Error>> {
+    if let Some(path) = &args.scene_path {
+        if !path.is_absolute() {
+            return Err(format!("--scene-path must be absolute: {}", path.display()).into());
         }
+        return Ok(path.clone());
     }
-    panic!(
-        "scene.json not found; tried: {:?}",
-        candidates
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-    );
+
+    Ok(workspace_root()
+        .join("examples")
+        .join(&args.example)
+        .join("scene.json"))
+}
+
+fn load_scene(path: &Path) -> Result<SceneNode, Box<dyn Error>> {
+    let data = std::fs::read_to_string(path)?;
+    let scene = serde_json::from_str(&data)?;
+    Ok(scene)
+}
+
+fn load_resolved_scene(path: &Path) -> Result<SceneNode, Box<dyn Error>> {
+    let scene = load_scene(path)?;
+    let engine = CelEngine::new();
+    resolve_scene(&scene, &engine)
+        .ok_or_else(|| format!("root scene resolved to nothing for {}", path.display()).into())
 }
 
 fn build_tree_update(scene: &SceneNode) -> TreeUpdate {
@@ -208,6 +233,20 @@ fn warm_image_cache(scene: &SceneNode, renderer: &mut Renderer) {
     }
 }
 
+type SceneDebouncer = Debouncer<RecommendedWatcher, RecommendedCache>;
+
+#[derive(Debug)]
+enum UserEvent {
+    AccessKit(AccessKitEvent),
+    ReloadScene(PathBuf),
+}
+
+impl From<AccessKitEvent> for UserEvent {
+    fn from(value: AccessKitEvent) -> Self {
+        Self::AccessKit(value)
+    }
+}
+
 struct GpuState {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -221,18 +260,44 @@ struct WindowState {
 }
 
 struct App {
-    proxy: EventLoopProxy<AccessKitEvent>,
+    proxy: EventLoopProxy<UserEvent>,
     window: Option<WindowState>,
     scene: SceneNode,
+    _debouncer: SceneDebouncer,
 }
 
 impl App {
-    fn new(proxy: EventLoopProxy<AccessKitEvent>, scene: SceneNode) -> Self {
+    fn new(proxy: EventLoopProxy<UserEvent>, scene: SceneNode, debouncer: SceneDebouncer) -> Self {
         Self {
             proxy,
             window: None,
             scene,
+            _debouncer: debouncer,
         }
+    }
+
+    fn reload_scene(&mut self, path: &Path) {
+        let scene = match load_resolved_scene(path) {
+            Ok(scene) => scene,
+            Err(e) => {
+                eprintln!("reload: failed to load {}: {e}", path.display());
+                return;
+            }
+        };
+        self.scene = scene;
+
+        let Some(state) = self.window.as_mut() else {
+            return;
+        };
+
+        if let Some(gpu) = state.gpu.as_mut() {
+            warm_image_cache(&self.scene, &mut gpu.renderer);
+        }
+
+        dump_ax_tree(&self.scene);
+        let scene = &self.scene;
+        state.adapter.update_if_active(|| build_tree_update(scene));
+        state.window.request_redraw();
     }
 
     fn init_gpu(&mut self) {
@@ -296,7 +361,7 @@ impl App {
     }
 }
 
-impl ApplicationHandler<AccessKitEvent> for App {
+impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -392,31 +457,55 @@ impl ApplicationHandler<AccessKitEvent> for App {
         }
     }
 
-    fn user_event(&mut self, _: &ActiveEventLoop, user_event: AccessKitEvent) {
-        let Some(state) = self.window.as_mut() else {
-            return;
-        };
-        let scene = &self.scene;
-        match user_event.window_event {
-            AccessKitWindowEvent::InitialTreeRequested => {
-                state.adapter.update_if_active(|| build_tree_update(scene));
+    fn user_event(&mut self, _: &ActiveEventLoop, user_event: UserEvent) {
+        match user_event {
+            UserEvent::AccessKit(user_event) => {
+                let Some(state) = self.window.as_mut() else {
+                    return;
+                };
+                let scene = &self.scene;
+                match user_event.window_event {
+                    AccessKitWindowEvent::InitialTreeRequested => {
+                        state.adapter.update_if_active(|| build_tree_update(scene));
+                    }
+                    AccessKitWindowEvent::ActionRequested(_) => {}
+                    AccessKitWindowEvent::AccessibilityDeactivated => {}
+                }
             }
-            AccessKitWindowEvent::ActionRequested(_) => {}
-            AccessKitWindowEvent::AccessibilityDeactivated => {}
+            UserEvent::ReloadScene(path) => {
+                self.reload_scene(&path);
+            }
         }
     }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let _ = std::env::args().collect::<Vec<_>>();
+    let args = Args::parse();
+    let scene_path = resolve_scene_path(&args)?;
+    let scene = load_resolved_scene(&scene_path)?;
 
-    let scene = load_scene();
-    let engine = CelEngine::new();
-    let scene = resolve_scene(&scene, &engine).expect("root scene must not resolve to nothing");
-
-    let event_loop = EventLoop::<AccessKitEvent>::with_user_event().build()?;
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let mut app = App::new(proxy, scene);
+    let watched_path = scene_path.clone();
+    let watcher_proxy = proxy.clone();
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(200),
+        None,
+        move |result: DebounceEventResult| match result {
+            Ok(events) if !events.is_empty() => {
+                let _ = watcher_proxy.send_event(UserEvent::ReloadScene(watched_path.clone()));
+            }
+            Ok(_) => {}
+            Err(errors) => {
+                for error in errors {
+                    eprintln!("reload watch error: {error}");
+                }
+            }
+        },
+    )?;
+    debouncer.watch(&scene_path, RecursiveMode::NonRecursive)?;
+
+    let mut app = App::new(proxy, scene, debouncer);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
