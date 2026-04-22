@@ -1,41 +1,64 @@
-//! Iteration 2 `app-native`: renders a scene tree of nested Frames from
-//! `scene.json` via wgpu, and publishes a hierarchical AccessKit tree.
+//! Iteration 6 `app-native`: the scene is now *reactive*.
 //!
-//! Based on the Iteration 1 scaffold, extended with:
-//!   - `SceneNode` enum deserialization (replaces bare `Frame`)
-//!   - Recursive AccessKit tree from `flatten_scene`
-//!   - Hierarchical AX dump for `xtask inspect-ax`
-//!   - `render_scene` replaces single-frame `render`
+//! Pointer events (`CursorMoved`, `CursorLeft`, `MouseInput`) feed an
+//! [`InteractionState`] which, together with the scene's declared
+//! `state`, populates the CEL [`EvalEnv`] that `resolve_scene` consults
+//! to select `Condition` branches. Clicks fire the hovered node's
+//! `on_click` mutations against `state`, then re-resolve.
 //!
-//! Structure follows the upstream `accesskit_winit` simple.rs example:
-//!   <https://github.com/AccessKit/accesskit/blob/main/platforms/winit/examples/simple.rs>
+//! The renderer (`sdui-runtime-wgpu`) is unchanged — the dynamic tree
+//! is produced entirely by the Iteration-5 `resolve_scene` pre-pass.
+//!
+//! References:
+//!   - winit 0.30 `ApplicationHandler`: <https://docs.rs/winit/0.30/winit/application/trait.ApplicationHandler.html>
+//!   - AccessKit `accesskit_winit` simple.rs: <https://github.com/AccessKit/accesskit/blob/main/platforms/winit/examples/simple.rs>
 
-use accesskit::{Node, Role, Tree, TreeId, TreeUpdate};
+use accesskit::{Action, Node, Role, Tree, TreeId, TreeUpdate};
 use accesskit_winit::{Adapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent};
-use sdui_cel::CelEngine;
-use sdui_core::{flatten_scene, resolve_scene, ImageSource, SceneNode, ROOT_NODE_ID};
+use sdui_cel::{CelEngine, ExprCache};
+use sdui_core::{
+    apply_mutations, build_eval_env, flatten_scene, hit_test, refresh_interaction_after_rebuild,
+    resolve_scene, validate_flat, FlatNode, ImageSource, InteractionState, Scene, SceneNode,
+    ROOT_NODE_ID,
+};
 use sdui_runtime_wgpu::Renderer;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::io::Read;
 use std::path::PathBuf;
 use wgpu::CurrentSurfaceTexture;
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{ElementState, MouseButton, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy},
     window::{Window, WindowId},
 };
 
-const WINDOW_TITLE: &str = "sdui smoke";
+const WINDOW_TITLE: &str = "sdui";
 
-/// Load `examples/smoke/scene.json` relative to the workspace root.
-fn load_scene() -> SceneNode {
+/// Parse `--example <name>` from argv; defaults to "smoke".
+fn parse_example_arg(args: &[String]) -> String {
+    let mut iter = args.iter().skip(1);
+    while let Some(a) = iter.next() {
+        if a == "--example" {
+            if let Some(v) = iter.next() {
+                return v.clone();
+            }
+        }
+    }
+    "smoke".to_string()
+}
+
+/// Load `examples/<example>/scene.json` as a [`Scene`], back-compat
+/// accepting a bare `SceneNode` at the top level.
+fn load_scene(example: &str) -> Scene {
+    let rel = format!("examples/{example}/scene.json");
     let candidates = [
-        PathBuf::from("examples/smoke/scene.json"),
+        PathBuf::from(&rel),
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
-            .join("examples/smoke/scene.json"),
+            .join(&rel),
     ];
     for path in &candidates {
         if let Ok(data) = std::fs::read_to_string(path) {
@@ -57,7 +80,6 @@ fn build_tree_update(scene: &SceneNode) -> TreeUpdate {
 
     let mut root = Node::new(Role::Window);
     root.set_label(WINDOW_TITLE);
-    // Root's children are the top-level scene nodes (just the first one).
     let top_children: Vec<_> = flat.first().map(|n| vec![n.id]).unwrap_or_default();
     root.set_children(top_children);
 
@@ -74,7 +96,8 @@ fn build_tree_update(scene: &SceneNode) -> TreeUpdate {
     }
 }
 
-/// Dump the AccessKit tree as hierarchical JSON to `target/ax-dump-<pid>.json`.
+/// Dump the resolved scene as hierarchical JSON to
+/// `target/ax-dump-<pid>.json` so `cargo xtask inspect-ax` can read it.
 fn dump_ax_tree(scene: &SceneNode) {
     let pid = std::process::id();
     let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -98,6 +121,7 @@ fn dump_ax_tree(scene: &SceneNode) {
                 serde_json::json!({
                     "role": "generic_container",
                     "label": f.label,
+                    "id": f.id,
                     "bounds": {
                         "x0": abs_x,
                         "y0": abs_y,
@@ -114,6 +138,7 @@ fn dump_ax_tree(scene: &SceneNode) {
                 serde_json::json!({
                     "role": "static_text",
                     "label": t.content,
+                    "id": t.id,
                     "bounds": {
                         "x0": abs_x,
                         "y0": abs_y,
@@ -129,6 +154,7 @@ fn dump_ax_tree(scene: &SceneNode) {
                 serde_json::json!({
                     "role": "image",
                     "label": i.alt.as_deref().unwrap_or(&i.label),
+                    "id": i.id,
                     "bounds": {
                         "x0": abs_x,
                         "y0": abs_y,
@@ -158,7 +184,6 @@ fn dump_ax_tree(scene: &SceneNode) {
 }
 
 /// Recursively collect every `ImageSource` referenced by this subtree.
-/// The scene is expected to be condition-free (see `resolve_scene`).
 fn collect_image_sources(node: &SceneNode, out: &mut Vec<ImageSource>) {
     match node {
         SceneNode::Frame(f) => {
@@ -174,8 +199,6 @@ fn collect_image_sources(node: &SceneNode, out: &mut Vec<ImageSource>) {
     }
 }
 
-/// Fetch the bytes for an `ImageSource` (blocking). `Url` uses `ureq`, `Path`
-/// reads the filesystem. Errors are propagated so the caller can warn and skip.
 fn load_image_bytes(source: &ImageSource) -> Result<Vec<u8>, Box<dyn Error>> {
     match source {
         ImageSource::Url { url } => {
@@ -192,10 +215,10 @@ fn load_image_bytes(source: &ImageSource) -> Result<Vec<u8>, Box<dyn Error>> {
     }
 }
 
-/// Warm up `renderer`'s image cache for every `Image` node in `scene`.
-///
-/// Failures (network/FS/decode) log to stderr and skip — the placeholder
-/// keeps rendering.
+/// Warm the renderer's image cache for every `Image` in the currently
+/// resolved scene. For Iteration 6 this runs once at startup (idle state);
+/// scenes that vary their images per interaction would need per-resolve
+/// warming, which is out of scope.
 fn warm_image_cache(scene: &SceneNode, renderer: &mut Renderer) {
     let mut sources = Vec::new();
     collect_image_sources(scene, &mut sources);
@@ -223,15 +246,50 @@ struct WindowState {
 struct App {
     proxy: EventLoopProxy<AccessKitEvent>,
     window: Option<WindowState>,
+
+    /// Unresolved source tree — re-resolved on every state/interaction diff.
+    scene_src: SceneNode,
+    /// Author-declared state; mutations write here.
+    state: BTreeMap<String, serde_json::Value>,
+    /// Currently resolved tree (what's drawn + dumped).
     scene: SceneNode,
+    /// Flattened absolute-coordinate list used for hit-testing.
+    flat: Vec<FlatNode>,
+
+    interaction: InteractionState,
+    last_cursor: Option<(f32, f32)>,
+
+    engine: CelEngine,
+    cache: ExprCache,
 }
 
 impl App {
-    fn new(proxy: EventLoopProxy<AccessKitEvent>, scene: SceneNode) -> Self {
+    fn new(proxy: EventLoopProxy<AccessKitEvent>, scene_wrap: Scene) -> Self {
+        let engine = CelEngine::new();
+        let mut cache = ExprCache::new();
+        let state = scene_wrap.state.clone();
+        let interaction = InteractionState::default();
+
+        // Initial resolve against the idle env so the first frame is consistent.
+        let env = build_eval_env(&interaction, &state);
+        let scene = resolve_scene(&scene_wrap.root, &engine, &env, &mut cache)
+            .expect("root scene must not resolve to nothing");
+        let flat = flatten_scene(&scene);
+        if let Err(e) = validate_flat(&flat) {
+            eprintln!("[sdui] scene validation: {e}");
+        }
+
         Self {
             proxy,
             window: None,
+            scene_src: scene_wrap.root,
+            state,
             scene,
+            flat,
+            interaction,
+            last_cursor: None,
+            engine,
+            cache,
         }
     }
 
@@ -283,8 +341,6 @@ impl App {
 
         let mut renderer = Renderer::new(device, queue, format);
 
-        // Synchronously load every Image referenced by the scene so the first
-        // frame doesn't flash a placeholder. Failures keep the placeholder.
         warm_image_cache(&self.scene, &mut renderer);
 
         let ws = self.window.as_mut().unwrap();
@@ -293,6 +349,67 @@ impl App {
             config,
             renderer,
         });
+    }
+
+    /// Rebuild `self.scene` + `self.flat` from the current interaction +
+    /// state, update AccessKit, and request a redraw.
+    ///
+    /// Post-rebuild re-hit (Codex finding #11): after flatten, drop any
+    /// `hovered`/`pressed` whose node disappeared, and then re-hit at
+    /// the last known cursor position so `hovered` stays consistent
+    /// with the new tree. A second rebuild is NOT triggered to avoid
+    /// loops — the next pointer event corrects any remaining drift.
+    fn rebuild_scene(&mut self) {
+        let env = build_eval_env(&self.interaction, &self.state);
+        let resolved = resolve_scene(&self.scene_src, &self.engine, &env, &mut self.cache)
+            .unwrap_or_else(|| self.scene.clone());
+        self.scene = resolved;
+        self.flat = flatten_scene(&self.scene);
+        if let Err(e) = validate_flat(&self.flat) {
+            eprintln!("[sdui] scene validation: {e}");
+        }
+
+        // Drop stale references (node removed by a Condition flip).
+        refresh_interaction_after_rebuild(&mut self.interaction, &self.flat);
+
+        // Re-hit at last cursor so hover state matches the new flat list.
+        if let Some((x, y)) = self.last_cursor {
+            let new_hovered = hit_test(&self.flat, x, y).and_then(|n| n.author_id.clone());
+            if new_hovered != self.interaction.hovered {
+                self.interaction.hovered = new_hovered;
+                // Second-pass env update without a full re-resolve — the
+                // next render cycle will pick it up.
+            }
+        }
+
+        dump_ax_tree(&self.scene);
+        if let Some(ws) = self.window.as_mut() {
+            let scene = self.scene.clone();
+            ws.adapter.update_if_active(|| build_tree_update(&scene));
+            ws.window.request_redraw();
+        }
+    }
+
+    /// Resolve a node id to its `on_click` mutations (if any) and apply them.
+    fn run_on_click_for(&mut self, id: &str) {
+        let muts: Vec<_> = self
+            .flat
+            .iter()
+            .find(|n| n.author_id.as_deref() == Some(id))
+            .map(|n| n.on_click.clone())
+            .unwrap_or_default();
+        if muts.is_empty() {
+            return;
+        }
+        let env = build_eval_env(&self.interaction, &self.state);
+        apply_mutations(
+            &mut self.state,
+            &muts,
+            &self.engine,
+            &env,
+            &mut self.cache,
+        );
+        eprintln!("[sdui] on_click {id}: state = {:?}", self.state);
     }
 }
 
@@ -322,10 +439,6 @@ impl ApplicationHandler<AccessKitEvent> for App {
         self.init_gpu();
         dump_ax_tree(&self.scene);
 
-        // Make the window visible only AFTER the surface is configured and the
-        // image cache is warmed — otherwise macOS may commit it while wgpu is
-        // still initializing, the first frames land in the Occluded state, and
-        // nothing subsequently kicks a redraw.
         let ws = self.window.as_ref().expect("window must exist");
         ws.window.set_visible(true);
         ws.window.request_redraw();
@@ -351,6 +464,58 @@ impl ApplicationHandler<AccessKitEvent> for App {
             }
             WindowEvent::Occluded(false) => {
                 state.window.request_redraw();
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let x = position.x as f32;
+                let y = position.y as f32;
+                self.last_cursor = Some((x, y));
+                let new_hovered = hit_test(&self.flat, x, y).and_then(|n| n.author_id.clone());
+                if new_hovered != self.interaction.hovered {
+                    self.interaction.hovered = new_hovered;
+                    self.rebuild_scene();
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.last_cursor = None;
+                if self.interaction.hovered.is_some() || self.interaction.pressed.is_some() {
+                    self.interaction.hovered = None;
+                    self.interaction.pressed = None;
+                    self.rebuild_scene();
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let new_pressed = self.interaction.hovered.clone();
+                if new_pressed != self.interaction.pressed {
+                    self.interaction.pressed = new_pressed;
+                    self.rebuild_scene();
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let pressed = self.interaction.pressed.take();
+                let mut mutated = false;
+                if let Some(id) = pressed {
+                    // Only fire on release over the same node we pressed on.
+                    if self.interaction.hovered.as_deref() == Some(id.as_str()) {
+                        self.run_on_click_for(&id);
+                        mutated = true;
+                    }
+                }
+                // Either state or pressed changed — rebuild.
+                if mutated || self.interaction.pressed.is_some() {
+                    self.rebuild_scene();
+                } else {
+                    // pressed cleared but nothing fired — still rebuild so
+                    // any ui.pressed-dependent Condition updates.
+                    self.rebuild_scene();
+                }
             }
             WindowEvent::RedrawRequested => {
                 if let Some(gpu) = state.gpu.as_mut() {
@@ -393,30 +558,44 @@ impl ApplicationHandler<AccessKitEvent> for App {
     }
 
     fn user_event(&mut self, _: &ActiveEventLoop, user_event: AccessKitEvent) {
-        let Some(state) = self.window.as_mut() else {
-            return;
-        };
-        let scene = &self.scene;
         match user_event.window_event {
             AccessKitWindowEvent::InitialTreeRequested => {
-                state.adapter.update_if_active(|| build_tree_update(scene));
+                let scene = self.scene.clone();
+                if let Some(ws) = self.window.as_mut() {
+                    ws.adapter.update_if_active(|| build_tree_update(&scene));
+                }
             }
-            AccessKitWindowEvent::ActionRequested(_) => {}
+            AccessKitWindowEvent::ActionRequested(request) => {
+                // Map AccessKit Action::Click → the same on_click pipeline
+                // pointer events use. Unblocks assistive-tech click
+                // (Codex review finding #10). Focus / keyboard
+                // activation (Tab / Enter / Space) are out of scope for
+                // Iteration 6 — see SPRINTS for I6.1.
+                if request.action == Action::Click {
+                    if let Some(id) = self
+                        .flat
+                        .iter()
+                        .find(|n| n.id == request.target_node)
+                        .and_then(|n| n.author_id.clone())
+                    {
+                        self.run_on_click_for(&id);
+                        self.rebuild_scene();
+                    }
+                }
+            }
             AccessKitWindowEvent::AccessibilityDeactivated => {}
         }
     }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let _ = std::env::args().collect::<Vec<_>>();
-
-    let scene = load_scene();
-    let engine = CelEngine::new();
-    let scene = resolve_scene(&scene, &engine).expect("root scene must not resolve to nothing");
+    let args: Vec<String> = std::env::args().collect();
+    let example = parse_example_arg(&args);
+    let scene_wrap = load_scene(&example);
 
     let event_loop = EventLoop::<AccessKitEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let mut app = App::new(proxy, scene);
+    let mut app = App::new(proxy, scene_wrap);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

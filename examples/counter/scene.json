@@ -1,0 +1,60 @@
+{
+  "state": { "count": 0 },
+  "root": {
+    "type": "Frame",
+    "label": "counter-root",
+    "background_color": [0.1, 0.1, 0.12, 1.0],
+    "x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0,
+    "children": [
+      {
+        "type": "Condition",
+        "when": "ui.hovered == 'counter_btn'",
+        "then": {
+          "type": "Frame",
+          "id": "counter_btn",
+          "label": "button-hovered",
+          "background_color": [0.30, 0.60, 1.00, 1.0],
+          "x": 100.0, "y": 200.0, "width": 160.0, "height": 64.0,
+          "on_click": [{ "path": "count", "set": "state.count + 1" }],
+          "children": [
+            {
+              "type": "Text",
+              "label": "btn-label",
+              "content": "Click me",
+              "font_size": 20.0,
+              "color": [1.0, 1.0, 1.0, 1.0],
+              "x": 20.0, "y": 20.0, "width": 120.0, "height": 24.0
+            }
+          ]
+        },
+        "else": {
+          "type": "Frame",
+          "id": "counter_btn",
+          "label": "button-idle",
+          "background_color": [0.20, 0.45, 0.80, 1.0],
+          "x": 100.0, "y": 200.0, "width": 160.0, "height": 64.0,
+          "on_click": [{ "path": "count", "set": "state.count + 1" }],
+          "children": [
+            {
+              "type": "Text",
+              "label": "btn-label",
+              "content": "Click me",
+              "font_size": 20.0,
+              "color": [1.0, 1.0, 1.0, 1.0],
+              "x": 20.0, "y": 20.0, "width": 120.0, "height": 24.0
+            }
+          ]
+        }
+      },
+      {
+        "type": "Text",
+        "id": "counter_display",
+        "label": "count-display",
+        "content": "Count: ${state.count}",
+        "font_size": 24.0,
+        "color": [1.0, 1.0, 1.0, 1.0],
+        "x": 300.0, "y": 210.0, "width": 300.0, "height": 40.0
+      }
+    ]
+  }
+}

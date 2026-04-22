@@ -351,10 +351,12 @@ fn serve_web_blocking(dist: &Path, port: u16, _example: &str) -> std::io::Result
         use tower_http::services::ServeDir;
 
         let dist = dist.to_path_buf();
-        // `/examples/<name>` and `/examples/<name>/` both serve the wasm
-        // bundle — the example name is a placeholder in Iteration 0.
-        let serve_bundle = ServeDir::new(dist.clone()).append_index_html_on_directories(true);
-        let serve_bundle_2 = ServeDir::new(dist).append_index_html_on_directories(true);
+        // Every `/examples/<name>/` route serves the same wasm bundle —
+        // the example scene is selected by URL pathname inside app-web's
+        // `select_scene_source()` (Iteration 6).
+        let serve_bundle_smoke = ServeDir::new(dist.clone()).append_index_html_on_directories(true);
+        let serve_bundle_counter =
+            ServeDir::new(dist.clone()).append_index_html_on_directories(true);
 
         let app = Router::new()
             .route("/health", get(|| async { "ok" }))
@@ -362,10 +364,8 @@ fn serve_web_blocking(dist: &Path, port: u16, _example: &str) -> std::io::Result
                 "/",
                 get(|| async { axum::response::Redirect::to("/examples/smoke/") }),
             )
-            .nest_service("/examples/smoke", serve_bundle)
-            // Fallback route for any future example name; points at the same
-            // bundle until per-example builds exist.
-            .nest_service("/examples", serve_bundle_2)
+            .nest_service("/examples/smoke", serve_bundle_smoke)
+            .nest_service("/examples/counter", serve_bundle_counter)
             .fallback(|| async {
                 (axum::http::StatusCode::NOT_FOUND, "not found").into_response()
             });
