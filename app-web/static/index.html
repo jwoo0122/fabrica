@@ -3,7 +3,22 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>sdui smoke</title>
+    <title>sdui</title>
+    <!--
+      The axum server hands this file to both `/examples/<name>` and
+      `/examples/<name>/`. The module below uses `./app_web.js`, which
+      only resolves correctly when the current URL ends in `/`. If we
+      landed on the slash-less variant, navigate once to the canonical
+      form so the module loader stays inside the bundle directory.
+    -->
+    <script>
+      (function () {
+        var loc = window.location;
+        if (loc.pathname.startsWith("/examples/") && !loc.pathname.endsWith("/")) {
+          loc.replace(loc.pathname + "/" + loc.search + loc.hash);
+        }
+      })();
+    </script>
   </head>
   <body>
     <!--

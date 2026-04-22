@@ -358,6 +358,12 @@ fn serve_web_blocking(dist: &Path, port: u16, _example: &str) -> std::io::Result
         let serve_bundle_counter =
             ServeDir::new(dist.clone()).append_index_html_on_directories(true);
 
+        // The bundled index.html imports `./app_web.js` and needs the
+        // URL to end in `/` so the relative path resolves inside the
+        // bundle directory. A no-slash URL is repaired client-side in
+        // index.html — a router-level redirect is not possible because
+        // axum rejects `route(path)` + `nest_service(path)` on the same
+        // prefix.
         let app = Router::new()
             .route("/health", get(|| async { "ok" }))
             .route(
