@@ -41,14 +41,29 @@ fn resolve_port() -> u16 {
 ///
 /// The `/assets/*` URL path maps to this directory, so e.g.
 /// `GET /assets/smoke.png` serves `<root>/assets/images/smoke.png`.
+///
+/// `env!("CARGO_MANIFEST_DIR")` is baked in at compile time. If the workspace
+/// is moved or renamed on disk, a stale cached binary would silently point at
+/// a non-existent path — the `exists()` check below turns that into a loud
+/// startup failure with an explicit rebuild hint.
 fn assets_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR = examples/mock-server; ../../assets reaches root.
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
         .expect("mock-server lives under examples/")
         .join("assets")
-        .join("images")
+        .join("images");
+    if !path.exists() {
+        eprintln!(
+            "mock-server: assets dir does not exist: {}\n\
+             The binary was likely compiled against an old workspace location.\n\
+             Fix: cargo clean -p mock-server && cargo build -p mock-server",
+            path.display()
+        );
+        std::process::exit(1);
+    }
+    path
 }
 
 #[tokio::main]

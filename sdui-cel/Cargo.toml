@@ -6,7 +6,11 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-# Dependency pulled in so the crate resolves against CEL; actual evaluation is
-# a later iteration (see CLAUDE.md §"Architecture summary" / CEL section).
-# crates.io: https://crates.io/crates/cel-interpreter (0.10.0 on 2025-07-23)
-cel-interpreter = { workspace = true }
+# cel-interpreter provides the CEL parser + evaluator. `default-features = false`
+# drops `regex` + `chrono` — Iteration 5 uses only literal/built-in operators
+# (no regex, no timestamp/duration), so those features are unnecessary and
+# would bloat the wasm bundle.
+# crates.io: https://crates.io/crates/cel-interpreter/0.10.0
+# features source: https://github.com/clarkmcc/cel-rust/blob/cel-interpreter-v0.10.0/interpreter/Cargo.toml
+cel-interpreter = { workspace = true, default-features = false }
+thiserror = { workspace = true }

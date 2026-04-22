@@ -36,6 +36,28 @@ OUT="target/verify-out/native-$STAMP"
 mkdir -p "$OUT"
 ```
 
+### 0. Mock-server preflight (MANDATORY — see CLAUDE.md §"Preflight")
+
+`xtask run-native` co-boots `mock-server` automatically, but a silent 404 from that server has masked real failures before (stale binary compiled against renamed workspace path). Before trusting anything downstream, confirm the asset route:
+
+```bash
+cargo build -p mock-server 2>&1 | tail -5
+# Start mock-server briefly on its own to probe — xtask will restart it.
+/Users/jinwoo/repos/fabrica/target/debug/mock-server 8138 &
+MOCK_PROBE_PID=$!
+sleep 1
+curl -sf http://localhost:8138/health || { echo "PREFLIGHT FAIL: /health"; kill $MOCK_PROBE_PID; exit 1; }
+curl -sfo "$OUT/smoke-probe.png" -w 'probe: %{http_code} %{content_type}\n' http://localhost:8138/assets/smoke.png | tee -a "$OUT/preflight.log"
+kill $MOCK_PROBE_PID 2>/dev/null; wait $MOCK_PROBE_PID 2>/dev/null || true
+grep -q '200 image/png' "$OUT/preflight.log" || {
+  echo "PREFLIGHT FAIL: /assets/smoke.png did not return 200 image/png."
+  echo "Fix: cargo clean -p mock-server && cargo build -p mock-server"
+  exit 1
+}
+```
+
+If preflight fails, **stop**. Do not continue to step 1.
+
 ### 1. Build and launch (background)
 
 ```bash

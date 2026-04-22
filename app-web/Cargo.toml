@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 sdui-core = { path = "../sdui-core" }
+sdui-cel = { path = "../sdui-cel" }
 sdui-runtime-wgpu = { path = "../sdui-runtime-wgpu" }
 
 # accesskit (web/wasm mirror -- manual DOM writer until upstream adapter ships)
@@ -29,9 +30,14 @@ web-sys = { workspace = true, features = [
     "console",
     "Document",
     "Element",
+    "Event",
+    "EventTarget",
     "HtmlElement",
     "HtmlCanvasElement",
     "HtmlImageElement",
+    "Location",
+    "MouseEvent",
+    "PointerEvent",
     "Request",
     "RequestInit",
     "RequestMode",

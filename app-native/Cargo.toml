@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 sdui-core = { path = "../sdui-core" }
+sdui-cel = { path = "../sdui-cel" }
 sdui-runtime-wgpu = { path = "../sdui-runtime-wgpu" }
 accesskit = { workspace = true }
 accesskit_winit = { workspace = true }

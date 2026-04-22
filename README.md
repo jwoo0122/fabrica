@@ -14,7 +14,7 @@ The motivating constraint: the same Scene graph must drive both the runtime (wha
 
 ## Current capabilities
 
-Implemented through **Iteration 4**. The project follows a strict "ship the example every iteration" loop — each milestone below renders end-to-end on both platforms with an automated verification pass:
+Implemented through **Iteration 5**. See [`SPRINTS.md`](./SPRINTS.md) for the completed-milestone index. The project follows a strict "ship the example every iteration" loop — each milestone below renders end-to-end on both platforms with an automated verification pass:
 
 | Iteration | What it added                                                                                                                                               |
 |-----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -23,17 +23,19 @@ Implemented through **Iteration 4**. The project follows a strict "ship the exam
 | 2         | Nested `Frame` children with **relative positioning**. `flatten_scene()` resolves absolute coordinates with stable `NodeId`s. Per-vertex colour, single draw call. |
 | 3         | `Text` leaf nodes rendered via [glyphon](https://crates.io/crates/glyphon) (cosmic-text + wgpu) with bundled Noto Sans. Single render pass — quads then text overlay. |
 | 4         | `Image` leaf rendered via the [`image`](https://crates.io/crates/image) crate texture upload + wgpu sampled pipeline. mock-server serves the bundled test asset. |
+| 5         | First operator: `Condition` with CEL-driven branch selection (literal-only env). `sdui-cel` realized via [`cel-interpreter`](https://crates.io/crates/cel-interpreter). `resolve_scene` pre-pass keeps the renderer byte-identical. |
 
 ### Scope today
 
-- **Node set (closed):** `Frame`, `Text`, `Image` (more below, progressively unlocked)
+- **Primitive node set (closed):** `Frame`, `Text`, `Image`
+- **Operator nodes:** `Condition` (CEL predicate; literal-only evaluation environment in this iteration)
 - **Platforms:** macOS native (Apple Silicon, Metal backend) + WebGPU (Safari 26+, Firefox 141+, Chromium)
 - **No fallbacks:** no WebGL2, no software raster. WebGPU or nothing.
 - **Accessibility is first-class:** every node carries `role` / `label` via [AccessKit](https://github.com/AccessKit/accesskit). The macOS NSAccessibility tree and the web ARIA mirror DOM are the primary verification surfaces.
 
 ### Not yet
 
-`ForEach`, `Condition`, `Fetching`, `PresetRef`, CEL expression evaluation, preset library resolver, router / state machine, hot reload, editor. Each has a stub crate and a decision in `CLAUDE.md`; none are implemented.
+`ForEach`, `Fetching`, `PresetRef`, Scene-level CEL variable bindings, preset library resolver, router / state machine, hot reload, editor. Each has a stub crate and a decision in `CLAUDE.md`; none are implemented.
 
 ---
 
@@ -68,7 +70,7 @@ app-native/         macOS binary (winit + accesskit_winit)
 app-web/            wasm binary (WebGPU canvas + ARIA mirror DOM)
 examples/
   mock-server/      Static JSON test server (for Fetching node)
-  smoke/            Minimal scene exercising Frame + Text
+  smoke/            Minimal scene exercising Frame + Text + Image
 xtask/              cargo xtask subcommand runner
 assets/fonts/       Bundled Noto Sans (SIL OFL)
 ```

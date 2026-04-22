@@ -131,15 +131,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aho-corasick"
-version = "1.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -260,6 +251,7 @@ dependencies = [
  "accesskit_macos",
  "accesskit_winit",
  "pollster",
+ "sdui-cel",
  "sdui-core",
  "sdui-runtime-wgpu",
  "serde_json",
@@ -276,6 +268,7 @@ dependencies = [
  "console_error_panic_hook",
  "gloo-timers",
  "js-sys",
+ "sdui-cel",
  "sdui-core",
  "sdui-runtime-wgpu",
  "serde_json",
@@ -718,10 +711,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a76c07820046cc8239526fceec6df147a979ae48644dbad274fc3ce38ab0973b"
 dependencies = [
  "cel-parser",
- "chrono",
  "nom",
  "paste",
- "regex",
  "serde",
  "thiserror 1.0.69",
 ]
@@ -747,16 +738,6 @@ name = "cfg_aliases"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
-
-[[package]]
-name = "chrono"
-version = "0.4.44"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
-dependencies = [
- "num-traits",
- "serde",
-]
 
 [[package]]
 name = "clap"
@@ -2627,35 +2608,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex"
-version = "1.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-automata"
-version = "0.4.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-syntax"
-version = "0.8.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
-
-[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2814,6 +2766,7 @@ name = "sdui-cel"
 version = "0.0.0"
 dependencies = [
  "cel-interpreter",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2821,8 +2774,10 @@ name = "sdui-core"
 version = "0.0.0"
 dependencies = [
  "accesskit",
+ "sdui-cel",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
